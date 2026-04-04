@@ -22,12 +22,12 @@ class PINNLoss:
     def __init__(self, weights: Dict[str, float] | None = None):
         self.weights = weights or {
             "equil_M": 1.0,
-            "equil_N": 100.0,
+            "equil_N": 1e5,
             "const_M": 1.0,
             "bc": 10.0,
             "M_net_bc": 10.0,
             "M_sec_bc": 10.0,
-            "N_sec_bc": 1000.0,
+            "N_sec_bc": 1e5,
             "data_disp": 1.0,
         }
 

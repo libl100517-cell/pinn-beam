@@ -175,7 +175,8 @@ class PINNBeamModel:
         pointwise_residual = (const_M_ptw + equil_M_ptw + equil_N_ptw).detach()
 
         # === BC loss ===
-        bc_fields = self.field_nets(xi_bc)
+        bc_xi = xi_bc.detach().requires_grad_(True)
+        bc_fields = self.field_nets(bc_xi)
 
         # w 边界: w(0)=w(1)=0
         raw_losses["bc"] = (bc_fields["w_bar"][0:1] ** 2).mean() + \
@@ -184,15 +185,17 @@ class PINNBeamModel:
         # M 网络边界: M_net(0)=M_net(1)=0
         raw_losses["M_net_bc"] = (bc_fields["M_bar"][0:1] ** 2).mean() + \
                                   (bc_fields["M_bar"][1:2] ** 2).mean()
+        bc_dw = _grad(bc_fields["w_bar"], bc_xi)
+        bc_d2w = _grad(bc_dw, bc_xi)
+        bc_kappa_bar = -bc_d2w
 
-        # 纤维截面边界 (kappa≈0 at supports)
+        bc_eps0_dim = bc_fields["eps0_bar"] * self.scales.eps_ref
+        bc_kappa_dim = bc_kappa_bar * self.scales.kap_ref
         N_sec_bc_0, M_sec_bc_0 = self._section_response(
-            bc_fields["eps0_bar"][0:1] * self.scales.eps_ref,
-            torch.zeros(1, 1, device=device), device,
+            bc_eps0_dim[0:1], bc_kappa_dim[0:1], device,
         )
         N_sec_bc_1, M_sec_bc_1 = self._section_response(
-            bc_fields["eps0_bar"][1:2] * self.scales.eps_ref,
-            torch.zeros(1, 1, device=device), device,
+            bc_eps0_dim[1:2], bc_kappa_dim[1:2], device,
         )
 
         # M_sec 边界: M_sec(0)=M_sec(1)=0

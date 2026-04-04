@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Steel-only nonlinear: elastic concrete + bilinear steel.
+"""Full nonlinear beam via curriculum learning.
 
-Tests nonlinear convergence with only steel yielding (simpler than full nonlinear).
+Strategy: gradually increase load from elastic to full nonlinear,
+using previous stage's network weights as initialization.
+
+Stage 1: q_target * 0.2  (elastic range)
+Stage 2: q_target * 0.4
+Stage 3: q_target * 0.6
+Stage 4: q_target * 0.8
+Stage 5: q_target * 1.0  (full load, deep into nonlinear)
 
 Usage:
     cd pinn
-    python -m examples.run_steel_nonlinear
+    python -m examples.run_nonlinear_curriculum
 """
 
 import os
@@ -20,7 +27,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from configs.base_config import BeamConfig
-from materials import ManderConcrete, BilinearSteel
+from materials import SmoothConcrete, BilinearSteel
 from sections import RCRectSection
 from physics import NonDimScales
 from models import FieldNetworks, PINNBeamModel
@@ -82,31 +89,33 @@ def main():
     RUN_DIR = make_run_dir()
     print(f">>> Output: {os.path.abspath(RUN_DIR)}")
 
+    q_target = 40.0
+    load_stages = [0.2, 0.4, 0.6, 0.8, 1.0]
+    epochs_per_stage = 10000
+
     cfg = BeamConfig(
         mode="forward",
         elastic=False,
-        n_epochs=20000,
+        n_epochs=epochs_per_stage,
         learning_rate=1e-4,
         n_collocation=200,
         activation="tanh",
-        q=40.0,
+        q=q_target,
         N_applied=0.0,
     )
     device = get_device()
     set_seed(cfg.seed)
 
-    L, q = cfg.beam_length, cfg.q
-    N_app = cfg.N_applied
-    print(f"  L={L}mm, q={q}N/mm")
-    print(f"  Section: {cfg.section_width}x{cfg.section_height}mm")
+    L = cfg.beam_length
+    print(f"  L={L}mm, q_target={q_target}N/mm")
+    print(f"  Stages: {[f'{s*q_target:.0f}N/mm' for s in load_stages]}")
+    print(f"  Epochs per stage: {epochs_per_stage}")
 
-    # Elastic concrete: Mander with extreme fc/eps_co so r→∞ (perfectly linear)
-    fc_elastic = cfg.Ec * 0.1 - 1  # Esec ≈ Ec → r very large → linear
-    concrete = ManderConcrete(fc=fc_elastic, Ec=cfg.Ec, eps_co=-0.1, eps_cu=-0.2,
-                              Gf=cfg.Gf, h=cfg.concrete_h)
+    # Build section with full nonlinear materials
+    concrete = SmoothConcrete(fc=cfg.fc, Ec=cfg.Ec, eps_co=cfg.eps_co)
     steel = BilinearSteel(fy=cfg.fy, Es=cfg.Es, b=cfg.steel_b)
-    print(f"  Concrete: ELASTIC (Mander, eps_co=-0.1)")
-    print(f"  Steel: NONLINEAR fy={cfg.fy}, Es={cfg.Es}, b={cfg.steel_b}")
+    print(f"  Concrete: SmoothConcrete fc={cfg.fc}, Ec={cfg.Ec}, eps_co={cfg.eps_co}")
+    print(f"  Steel: BilinearSteel fy={cfg.fy}, Es={cfg.Es}, b={cfg.steel_b}")
 
     rc = RCRectSection(
         width=cfg.section_width, height=cfg.section_height,
@@ -116,137 +125,149 @@ def main():
     EA, ES, EI = compute_section_stiffness(rc)
     print(f"  EA={EA:.3e}, ES={ES:.3e}, EI={EI:.3e}")
 
-    # Check yield moment
-    fy, Es = cfg.fy, cfg.Es
-    eps_y = fy / Es
-    d = abs(cfg.rebar_layout[0][0])  # rebar depth from centroid
-    kappa_y = eps_y / d
-    M_y = q * L**2 / 8
-    print(f"  Steel yield: eps_y={eps_y*1e6:.0f}με, kappa_y={kappa_y:.6e}")
-    print(f"  Midspan M = {M_y/1e6:.1f} kN.m")
-
-    # Reference solution (bisection)
-    print("\n  === Reference (bisection) ===")
-    kappa_max = M_y / EI * 5
-    ref = solve_beam_nonlinear(rc.section, L, q, n_pts=200, kappa_max=kappa_max)
-
-    # M-kappa curve
-    kap_curve, M_curve = build_M_kappa_curve(rc.section, kappa_max=kappa_max, n_pts=100)
-
-    # PINN setup
     scales = NonDimScales(L=L, E_ref=cfg.Ec, A_ref=rc.gross_area, I_ref=rc.gross_inertia)
-    nc = scales.norm_coeffs(q, EI)
-    print(f"  Norm coeffs: w={nc['w']:.3e}, M={nc['M']:.3e}, eps0={nc['eps0']:.3e}, N={nc['N']:.3e}")
 
     fibers = rc.section.fibers
     fibers_y = fibers.positions()
     fibers_A = fibers.areas()
     fibers_is_steel = [isinstance(f.material, BilinearSteel) for f in fibers.fibers]
 
+    # Build network (shared across stages)
+    nc = scales.norm_coeffs(q_target, EI)
+    print(f"  Norm coeffs: w={nc['w']:.3e}, M={nc['M']:.3e}, eps0={nc['eps0']:.3e}")
+
     field_nets = FieldNetworks(
         hidden_dims=cfg.hidden_dims, activation=cfg.activation,
         norm_coeffs=nc,
     ).to(device)
-    pinn = PINNBeamModel(
-        field_nets=field_nets, section=rc.section, scales=scales,
-        loss_weights=cfg.loss_weights, elastic=False,
-        fibers_y=fibers_y, fibers_A=fibers_A, fibers_is_steel=fibers_is_steel,
-        N_applied=N_app, norm_coeffs=nc,
-    )
 
     xi_col = uniform_collocation(cfg.n_collocation, 0.0, 1.0, device=device)
     xi_bc = boundary_points(0.0, 1.0, device=device)
-    q_bar = scales.to_nondim_q(q)
 
-    optimizer = torch.optim.Adam(field_nets.parameters(), lr=cfg.learning_rate)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.n_epochs)
-    trainer = Trainer(pinn, optimizer, scheduler, log_dir=RUN_DIR,
-                      use_ntk=False, resample_every=500)
+    all_loss_history = []
+    stage_results = []
 
-    print(f"\n  Training {cfg.n_epochs} epochs ...")
-    logger = trainer.train(xi_col, xi_bc, q_bar, cfg.n_epochs)
+    for stage_idx, load_frac in enumerate(load_stages):
+        q_stage = q_target * load_frac
+        q_bar = scales.to_nondim_q(q_stage)
 
-    # Predict
-    xi_plot = torch.linspace(0, 1, 200).unsqueeze(1)
-    res = predict_all(pinn, xi_plot, scales, device)
-    x = res["x"]
+        print(f"\n  ===== Stage {stage_idx+1}/{len(load_stages)}: "
+              f"q={q_stage:.1f} N/mm ({load_frac*100:.0f}%) =====")
+
+        pinn = PINNBeamModel(
+            field_nets=field_nets, section=rc.section, scales=scales,
+            loss_weights=cfg.loss_weights, elastic=False,
+            fibers_y=fibers_y, fibers_A=fibers_A, fibers_is_steel=fibers_is_steel,
+            N_applied=cfg.N_applied, norm_coeffs=nc,
+        )
+
+        # Fresh optimizer each stage (reset momentum)
+        optimizer = torch.optim.Adam(field_nets.parameters(), lr=cfg.learning_rate)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs_per_stage)
+        trainer = Trainer(pinn, optimizer, scheduler,
+                          use_ntk=False, resample_every=500)
+
+        logger = trainer.train(xi_col, xi_bc, q_bar, epochs_per_stage,
+                               print_every=epochs_per_stage)
+        all_loss_history.extend(logger.loss_history)
+
+        # Evaluate this stage
+        xi_plot = torch.linspace(0, 1, 200).unsqueeze(1)
+        res = predict_all(pinn, xi_plot, scales, device)
+        mid_p = len(res["x"]) // 2
+        print(f"    w_mid={res['w'][mid_p]:.4f}, M_net={res['M_net'][mid_p]:.0f}, "
+              f"eps0={res['eps0'][mid_p]:.6f}, max|N|={np.max(np.abs(res['N_sec'])):.0f}")
+        stage_results.append((q_stage, res))
+
+    # Reference solution at full load
+    print(f"\n  === Reference (bisection) at q={q_target} ===")
+    M_mid = q_target * L**2 / 8
+    kappa_max = M_mid / EI * 5
+    ref = solve_beam_nonlinear(rc.section, L, q_target, n_pts=200, kappa_max=kappa_max)
+    kap_curve, M_curve = build_M_kappa_curve(rc.section, kappa_max=kappa_max, n_pts=100)
+
+    # Final evaluation
+    _, res_final = stage_results[-1]
+    x = res_final["x"]
     mid_p = len(x) // 2
     mid_r = len(ref["x"]) // 2
 
-    print(f"\n  PINN midspan:  w={res['w'][mid_p]:.4f}, M_net={res['M_net'][mid_p]:.0f}, "
-          f"M_sec={res['M_sec'][mid_p]:.0f}, eps0={res['eps0'][mid_p]:.6f}")
-    print(f"  Ref midspan:   w={ref['w'][mid_r]:.4f}, M={ref['M'][mid_r]:.0f}, "
-          f"eps0={ref['eps0'][mid_r]:.6f}")
+    print(f"\n  PINN midspan:  w={res_final['w'][mid_p]:.4f}, M={res_final['M_net'][mid_p]:.0f}")
+    print(f"  Ref midspan:   w={ref['w'][mid_r]:.4f}, M={ref['M'][mid_r]:.0f}")
 
     # Plot 3x3
     fig, axes = plt.subplots(3, 3, figsize=(18, 14))
 
     ax = axes[0, 0]
-    ax.plot(x, res["w"], "b-", lw=2, label="PINN")
+    ax.plot(x, res_final["w"], "b-", lw=2, label="PINN")
     ax.plot(ref["x"], ref["w"], "r--", lw=1.5, label="Bisection ref")
+    for q_s, res_s in stage_results[:-1]:
+        ax.plot(res_s["x"], res_s["w"], "-", lw=0.8, alpha=0.4, label=f"q={q_s:.0f}")
     ax.set_xlabel("x (mm)"); ax.set_ylabel("w (mm)")
-    ax.set_title("Displacement w"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.set_title("Displacement w"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
 
     ax = axes[0, 1]
-    ax.plot(x, res["eps0"], "b-", lw=2, label="PINN")
+    ax.plot(x, res_final["eps0"], "b-", lw=2, label="PINN")
     ax.plot(ref["x"], ref["eps0"], "r--", lw=1.5, label="Bisection ref")
     ax.set_xlabel("x (mm)"); ax.set_ylabel("eps0")
     ax.set_title("Centroidal strain"); ax.legend(); ax.grid(True, alpha=0.3)
 
     ax = axes[0, 2]
-    ax.plot(x, res["kappa"], "b-", lw=2, label="PINN")
+    ax.plot(x, res_final["kappa"], "b-", lw=2, label="PINN")
     ax.plot(ref["x"], ref["kappa"], "r--", lw=1.5, label="Bisection ref")
     ax.set_xlabel("x (mm)"); ax.set_ylabel("kappa (1/mm)")
     ax.set_title("Curvature"); ax.legend(); ax.grid(True, alpha=0.3)
 
     ax = axes[1, 0]
-    ax.plot(x, res["M_net"] / 1e6, "b-", lw=2, label="M_net (network)")
-    ax.plot(x, res["M_sec"] / 1e6, "g-.", lw=1.5, label="M_sec (fiber)")
-    ax.plot(ref["x"], ref["M"] / 1e6, "r--", lw=1.5, label="Bisection ref")
+    ax.plot(x, res_final["M_net"] / 1e6, "b-", lw=2, label="M_net")
+    ax.plot(x, res_final["M_sec"] / 1e6, "g-.", lw=1.5, label="M_sec")
+    ax.plot(ref["x"], ref["M"] / 1e6, "r--", lw=1.5, label="Ref")
     ax.set_xlabel("x (mm)"); ax.set_ylabel("M (kN.m)")
     ax.set_title("Bending moment"); ax.legend(); ax.grid(True, alpha=0.3)
 
     ax = axes[1, 1]
-    ax.plot(x, res["N_sec"] / 1e3, "b-", lw=2, label="N_sec (fiber)")
+    ax.plot(x, res_final["N_sec"] / 1e3, "b-", lw=2, label="N_sec")
     ax.axhline(0, color="r", ls="--", lw=1)
     ax.set_xlabel("x (mm)"); ax.set_ylabel("N (kN)")
     ax.set_title("Axial force"); ax.legend(); ax.grid(True, alpha=0.3)
 
     ax = axes[1, 2]
     ax.plot(kap_curve, M_curve / 1e6, "k-", lw=1.5, label="M-κ curve")
-    ax.plot(res["kappa"], res["M_sec"] / 1e6, "b.", ms=3, label="PINN points")
-    ax.plot(ref["kappa"], ref["M"] / 1e6, "r+", ms=5, label="Bisection ref")
+    ax.plot(res_final["kappa"], res_final["M_sec"] / 1e6, "b.", ms=3, label="PINN")
+    ax.plot(ref["kappa"], ref["M"] / 1e6, "r+", ms=5, label="Ref")
     ax.set_xlabel("kappa (1/mm)"); ax.set_ylabel("M (kN.m)")
     ax.set_title("M-κ relationship"); ax.legend(); ax.grid(True, alpha=0.3)
 
     ax = axes[2, 0]
-    ax.plot(x, (res["M_net"] - res["M_sec"]) / 1e3, "b-", lw=1.5)
+    ax.plot(x, (res_final["M_net"] - res_final["M_sec"]) / 1e3, "b-", lw=1.5)
     ax.axhline(0, color="r", ls="--", lw=1)
-    ax.set_xlabel("x (mm)"); ax.set_ylabel("M_net - M_sec (kN.mm)")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("ΔM (kN.mm)")
     ax.set_title("Constitutive gap"); ax.grid(True, alpha=0.3)
 
     ax = axes[2, 1]
-    ax.semilogy(logger.loss_history, "k-", lw=1, label="Total")
-    for name, hist in logger.component_history.items():
-        if name != "total":
-            ax.semilogy(hist, lw=0.8, alpha=0.7, label=name)
-    ax.set_xlabel("Epoch"); ax.set_ylabel("Loss")
-    ax.set_title("Loss history"); ax.legend(fontsize=6, ncol=2); ax.grid(True, alpha=0.3)
+    ax.semilogy(all_loss_history, "k-", lw=0.5)
+    for i, frac in enumerate(load_stages):
+        ax.axvline(i * epochs_per_stage, color="gray", ls=":", lw=0.8)
+        ax.text(i * epochs_per_stage + 100, max(all_loss_history) * 0.5,
+                f"{frac*100:.0f}%", fontsize=7)
+    ax.set_xlabel("Epoch (total)"); ax.set_ylabel("Loss")
+    ax.set_title("Loss history (all stages)"); ax.grid(True, alpha=0.3)
 
-    # Material curves
     ax = axes[2, 2]
     eps_c = np.linspace(-0.004, 0.001, 200)
     sig_c = [concrete.stress(torch.tensor([e])).item() for e in eps_c]
     eps_s = np.linspace(-0.005, 0.005, 200)
     sig_s = [steel.stress(torch.tensor([e])).item() for e in eps_s]
-    ax.plot(eps_c * 1e3, sig_c, "b-", lw=1.5, label="Concrete (elastic)")
-    ax.plot(eps_s * 1e3, sig_s, "r-", lw=1.5, label="Steel (bilinear)")
+    ax.plot(eps_c * 1e3, sig_c, "b-", lw=1.5, label="Concrete")
+    ax.plot(eps_s * 1e3, sig_s, "r-", lw=1.5, label="Steel")
     ax.set_xlabel("strain (‰)"); ax.set_ylabel("stress (MPa)")
     ax.set_title("Material curves"); ax.legend(); ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f"Steel-only nonlinear: L={L}mm, q={q}N/mm, fy={cfg.fy}MPa", fontsize=12)
+    fig.suptitle(f"Curriculum learning: q=0→{q_target}N/mm in {len(load_stages)} stages",
+                 fontsize=12)
     fig.tight_layout()
-    fig.savefig(os.path.join(RUN_DIR, "steel_nonlinear.png"), dpi=150)
+    fig.savefig(os.path.join(RUN_DIR, "curriculum_nonlinear.png"), dpi=150)
     plt.close(fig)
 
     # Pointwise MSE
@@ -256,17 +277,17 @@ def main():
     ref_eps0 = interp1d(ref["x"], ref["eps0"], kind="cubic")(x)
     ref_N = interp1d(ref["x"], ref["N"], kind="cubic")(x)
 
-    mse_w = np.mean((res["w"] - ref_w) ** 2)
-    mse_M = np.mean((res["M_net"] - ref_M) ** 2)
-    mse_N = np.mean((res["N_sec"] - ref_N) ** 2)
-    mse_eps0 = np.mean((res["eps0"] - ref_eps0) ** 2)
+    mse_w = np.mean((res_final["w"] - ref_w) ** 2)
+    mse_M = np.mean((res_final["M_net"] - ref_M) ** 2)
+    mse_N = np.mean((res_final["N_sec"] - ref_N) ** 2)
+    mse_eps0 = np.mean((res_final["eps0"] - ref_eps0) ** 2)
 
-    print(f"\n  ── Pointwise MSE (vs bisection) ──")
+    print(f"\n  ── Pointwise MSE (vs bisection at q={q_target}) ──")
     print(f"  MSE_w:    {mse_w:.4e}  (NRMSE={np.sqrt(mse_w)/np.ptp(ref_w)*100:.2f}%)")
     print(f"  MSE_M:    {mse_M:.4e}  (NRMSE={np.sqrt(mse_M)/np.ptp(ref_M)*100:.2f}%)")
     print(f"  MSE_N:    {mse_N:.4e}  (RMSE={np.sqrt(mse_N):.0f} N)")
     print(f"  MSE_eps0: {mse_eps0:.4e}  (RMSE={np.sqrt(mse_eps0)*1e6:.2f} με)")
-    print(f"  max|N_sec|: {np.max(np.abs(res['N_sec'])):.0f} N")
+    print(f"  max|N_sec|: {np.max(np.abs(res_final['N_sec'])):.0f} N")
     print(f"\n  Saved to {os.path.abspath(RUN_DIR)}")
 
 

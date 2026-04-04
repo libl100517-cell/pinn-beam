@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Steel-only nonlinear: elastic concrete + bilinear steel.
+"""Concrete compression-only nonlinear: nonlinear compression + elastic tension + elastic steel.
 
-Tests nonlinear convergence with only steel yielding (simpler than full nonlinear).
+Tests PINN convergence when only concrete compression is nonlinear.
 
 Usage:
     cd pinn
-    python -m examples.run_steel_nonlinear
+    python -m examples.run_concrete_comp_nonlinear
 """
 
 import os
@@ -20,7 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from configs.base_config import BeamConfig
-from materials import ManderConcrete, BilinearSteel
+from materials import SmoothConcrete, BilinearSteel
 from sections import RCRectSection
 from physics import NonDimScales
 from models import FieldNetworks, PINNBeamModel
@@ -100,13 +100,16 @@ def main():
     print(f"  L={L}mm, q={q}N/mm")
     print(f"  Section: {cfg.section_width}x{cfg.section_height}mm")
 
-    # Elastic concrete: Mander with extreme fc/eps_co so r→∞ (perfectly linear)
-    fc_elastic = cfg.Ec * 0.1 - 1  # Esec ≈ Ec → r very large → linear
-    concrete = ManderConcrete(fc=fc_elastic, Ec=cfg.Ec, eps_co=-0.1, eps_cu=-0.2,
-                              Gf=cfg.Gf, h=cfg.concrete_h)
-    steel = BilinearSteel(fy=cfg.fy, Es=cfg.Es, b=cfg.steel_b)
-    print(f"  Concrete: ELASTIC (Mander, eps_co=-0.1)")
-    print(f"  Steel: NONLINEAR fy={cfg.fy}, Es={cfg.Es}, b={cfg.steel_b}")
+    # Concrete: nonlinear compression (SmoothConcrete with real eps_co)
+    #           + elastic tension (inherent in SmoothConcrete, decays slowly with large eps_f)
+    # Set eps_f very large so tension side stays linear in working range
+    concrete = SmoothConcrete(fc=cfg.fc, Ec=cfg.Ec, eps_co=cfg.eps_co,
+                              eps_f=1.0)  # huge eps_f → no tension softening
+    # Steel: elastic (b=1.0 → no yielding)
+    steel = BilinearSteel(fy=cfg.fy, Es=cfg.Es, b=1.0)
+    print(f"  Concrete: NONLINEAR compression (SmoothConcrete fc={cfg.fc}, eps_co={cfg.eps_co})")
+    print(f"            Tension: elastic (eps_f=1.0, no softening)")
+    print(f"  Steel: ELASTIC (b=1.0)")
 
     rc = RCRectSection(
         width=cfg.section_width, height=cfg.section_height,
@@ -116,18 +119,18 @@ def main():
     EA, ES, EI = compute_section_stiffness(rc)
     print(f"  EA={EA:.3e}, ES={ES:.3e}, EI={EI:.3e}")
 
-    # Check yield moment
-    fy, Es = cfg.fy, cfg.Es
-    eps_y = fy / Es
-    d = abs(cfg.rebar_layout[0][0])  # rebar depth from centroid
-    kappa_y = eps_y / d
-    M_y = q * L**2 / 8
-    print(f"  Steel yield: eps_y={eps_y*1e6:.0f}με, kappa_y={kappa_y:.6e}")
-    print(f"  Midspan M = {M_y/1e6:.1f} kN.m")
+    # Verify material behavior
+    print("\n  Material check:")
+    for e in [-0.002, -0.001, 0.0001, 0.001]:
+        eps = torch.tensor([e], requires_grad=True)
+        sig = concrete.stress(eps)
+        tang = torch.autograd.grad(sig, eps)[0].item()
+        print(f"    Concrete σ({e*1e3:+.1f}‰) = {sig.item():+.2f} MPa, E = {tang:.0f}")
 
     # Reference solution (bisection)
     print("\n  === Reference (bisection) ===")
-    kappa_max = M_y / EI * 5
+    M_mid = q * L**2 / 8
+    kappa_max = M_mid / EI * 5
     ref = solve_beam_nonlinear(rc.section, L, q, n_pts=200, kappa_max=kappa_max)
 
     # M-kappa curve
@@ -233,20 +236,19 @@ def main():
     ax.set_xlabel("Epoch"); ax.set_ylabel("Loss")
     ax.set_title("Loss history"); ax.legend(fontsize=6, ncol=2); ax.grid(True, alpha=0.3)
 
-    # Material curves
     ax = axes[2, 2]
     eps_c = np.linspace(-0.004, 0.001, 200)
     sig_c = [concrete.stress(torch.tensor([e])).item() for e in eps_c]
     eps_s = np.linspace(-0.005, 0.005, 200)
     sig_s = [steel.stress(torch.tensor([e])).item() for e in eps_s]
-    ax.plot(eps_c * 1e3, sig_c, "b-", lw=1.5, label="Concrete (elastic)")
-    ax.plot(eps_s * 1e3, sig_s, "r-", lw=1.5, label="Steel (bilinear)")
+    ax.plot(eps_c * 1e3, sig_c, "b-", lw=1.5, label="Concrete (Smooth)")
+    ax.plot(eps_s * 1e3, sig_s, "r-", lw=1.5, label="Steel (elastic)")
     ax.set_xlabel("strain (‰)"); ax.set_ylabel("stress (MPa)")
     ax.set_title("Material curves"); ax.legend(); ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f"Steel-only nonlinear: L={L}mm, q={q}N/mm, fy={cfg.fy}MPa", fontsize=12)
+    fig.suptitle(f"Concrete comp. nonlinear: L={L}mm, q={q}N/mm, fc={cfg.fc}MPa", fontsize=12)
     fig.tight_layout()
-    fig.savefig(os.path.join(RUN_DIR, "steel_nonlinear.png"), dpi=150)
+    fig.savefig(os.path.join(RUN_DIR, "concrete_comp_nonlinear.png"), dpi=150)
     plt.close(fig)
 
     # Pointwise MSE
