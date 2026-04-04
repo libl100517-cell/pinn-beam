@@ -1,0 +1,139 @@
+"""Core training loop for PINN beam models."""
+
+import os
+import logging
+from typing import Dict, List
+
+import torch
+
+from models.pinn_beam import PINNBeamModel
+from utils.logger import TrainingLogger
+from utils.ntk_weights import compute_ntk_weights
+from utils.sampling import residual_resample
+
+
+class Trainer:
+    """Runs the PINN training loop.
+
+    Parameters
+    ----------
+    model : PINNBeamModel
+    optimizer : torch.optim.Optimizer
+    scheduler : optional learning rate scheduler.
+    log_dir : str, optional
+        Directory for training log file. If None, no file logging.
+    use_ntk : bool
+        Enable NTK-based adaptive loss weighting.
+    ntk_every : int
+        Recompute NTK weights every this many epochs.
+    ntk_alpha : float
+        EMA smoothing factor for NTK weights.
+    resample_every : int
+        Resample collocation points every this many epochs. 0 = disabled.
+    """
+
+    def __init__(
+        self,
+        model: PINNBeamModel,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+        log_dir: str | None = None,
+        use_ntk: bool = False,
+        ntk_every: int = 100,
+        ntk_alpha: float = 0.1,
+        resample_every: int = 0,
+        ntk_max_ratio: float = 100.0,
+    ):
+        self.model = model
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.logger = TrainingLogger()
+        self.use_ntk = use_ntk
+        self.ntk_every = ntk_every
+        self.ntk_alpha = ntk_alpha
+        self.resample_every = resample_every
+        self.ntk_max_ratio = ntk_max_ratio
+        self._ntk_weights: Dict[str, float] | None = None
+
+        # File logger
+        self._file_logger = None
+        if log_dir is not None:
+            os.makedirs(log_dir, exist_ok=True)
+            self._file_logger = logging.getLogger("pinn_train")
+            self._file_logger.setLevel(logging.INFO)
+            self._file_logger.handlers.clear()
+            fh = logging.FileHandler(os.path.join(log_dir, "training.log"), mode="w")
+            fh.setFormatter(logging.Formatter("%(message)s"))
+            self._file_logger.addHandler(fh)
+
+    def _log(self, msg: str) -> None:
+        print(msg)
+        if self._file_logger is not None:
+            self._file_logger.info(msg)
+
+    def train(
+        self,
+        xi_col: torch.Tensor,
+        xi_bc: torch.Tensor,
+        q_bar: float,
+        n_epochs: int,
+        xi_data: torch.Tensor | None = None,
+        w_data: torch.Tensor | None = None,
+        print_every: int = 500,
+    ) -> TrainingLogger:
+        """Run the training loop. Returns the TrainingLogger."""
+        params = list(self.model.field_nets.parameters())
+        n_col = xi_col.shape[0]
+
+        for epoch in range(1, n_epochs + 1):
+            self.optimizer.zero_grad()
+
+            loss, components, raw_losses, ptw_res = self.model.forward(
+                xi_col, xi_bc, q_bar,
+                xi_data=xi_data, w_data=w_data,
+                adaptive_weights=self._ntk_weights,
+            )
+
+            # NTK weight update (before backward to reuse computation graph)
+            if self.use_ntk and epoch % self.ntk_every == 1:
+                self._ntk_weights = compute_ntk_weights(
+                    raw_losses, params,
+                    ema_weights=self._ntk_weights,
+                    alpha=self.ntk_alpha,
+                    max_ratio=self.ntk_max_ratio,
+                )
+
+            loss.backward()
+            self.optimizer.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
+
+            # Residual-based adaptive resampling
+            if self.resample_every > 0 and epoch % self.resample_every == 0:
+                xi_col = residual_resample(
+                    n_col, ptw_res, xi_col,
+                    x_min=0.0, x_max=1.0,
+                    uniform_ratio=0.5,
+                )
+
+            # Logging
+            self.logger.log_loss(loss.item(), components)
+            if self.use_ntk and self._ntk_weights:
+                self.logger.log_ntk_weights(self._ntk_weights)
+            if self.model.inverse_registry is not None:
+                self.logger.log_params(self.model.inverse_registry.get_values())
+
+            if epoch % print_every == 0 or epoch == 1:
+                msg = f"Epoch {epoch:>6d} | loss = {loss.item():.6e}"
+                for k, v in components.items():
+                    if k != "total":
+                        msg += f" | {k}={v:.3e}"
+                if self.model.inverse_registry is not None:
+                    for k, v in self.model.inverse_registry.get_values().items():
+                        msg += f" | {k}={v:.1f}"
+                if self.use_ntk and self._ntk_weights:
+                    ntk_str = " ".join(f"{k}={v:.2f}" for k, v in self._ntk_weights.items())
+                    msg += f" | NTK[{ntk_str}]"
+                self._log(msg)
+
+        return self.logger
