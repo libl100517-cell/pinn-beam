@@ -183,9 +183,11 @@ def main():
     print(f"  Ref midspan:   w={ref['w'][mid_r]:.4f}, M={ref['M'][mid_r]:.0f}, "
           f"eps0={ref['eps0'][mid_r]:.6f}")
 
-    # ── Analytical references for shear and load ──
+    # ── Reference derivatives ──
     V_ref = q * (L / 2.0 - ref["x"])
     q_ref_arr = np.full_like(ref["x"], q)
+    # Rotation from reference: θ = dw/dx ≈ finite difference
+    theta_ref = np.gradient(ref["w"], ref["x"])
 
     # ── Plot: 3x4 ──
     # Row 1: w, rotation, curvature, eps0
@@ -203,6 +205,7 @@ def main():
     # (0,1) Rotation
     ax = axes[0, 1]
     ax.plot(x, res["theta"], "b-", lw=2, label="PINN dw/dx")
+    ax.plot(ref["x"], theta_ref, "r--", lw=1.5, label="Ref")
     ax.set_xlabel("x (mm)"); ax.set_ylabel("θ (rad)")
     ax.set_title("Rotation w'"); ax.legend(); ax.grid(True, alpha=0.3)
 
