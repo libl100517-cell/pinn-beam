@@ -259,6 +259,46 @@ def main():
     print(f"  MSE_N:    {mse_N:.4e}  (RMSE={np.sqrt(mse_N):.0f} N)")
     print(f"  MSE_eps0: {mse_eps0:.4e}  (RMSE={np.sqrt(mse_eps0)*1e6:.2f} με)")
     print(f"  max|N_sec|: {np.max(np.abs(res['N_sec'])):.0f} N")
+
+    # ── Save run config & results summary ──
+    summary = f"""Run: {os.path.basename(RUN_DIR)}
+Date: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+=== Configuration ===
+Beam: L={L}mm, b={cfg.section_width}mm, h={cfg.section_height}mm
+Load: q={q}N/mm, N_applied={N_app}N
+Concrete: SmoothConcrete fc={cfg.fc}MPa, Ec={cfg.Ec}MPa, eps_co={cfg.eps_co}
+Steel: BilinearSteel fy={cfg.fy}MPa, Es={cfg.Es}MPa, b={cfg.steel_b}
+Rebar: {cfg.rebar_layout}
+Fibers: {cfg.n_concrete_fibers} concrete fibers
+
+=== PINN Architecture ===
+Networks: 3 (w, eps0, M), N from fiber section
+Hidden: {cfg.hidden_dims}, activation={cfg.activation}
+Norm coeffs: w={nc['w']:.3e}, M={nc['M']:.3e}, eps0={nc['eps0']:.3e}, N={nc['N']:.3e}
+
+=== Training ===
+Epochs: {cfg.n_epochs}, lr={cfg.learning_rate}
+Collocation: {cfg.n_collocation}, resample_every=500
+NTK: off
+Loss weights: {cfg.loss_weights}
+
+=== Results (vs bisection reference) ===
+w midspan:  PINN={res['w'][mid_p]:.4f}, Ref={ref['w'][mid_r]:.4f}
+M midspan:  PINN={res['M_net'][mid_p]:.0f}, Ref={ref['M'][mid_r]:.0f}
+eps0 midspan: PINN={res['eps0'][mid_p]:.6f}, Ref={ref['eps0'][mid_r]:.6f}
+
+MSE_w:    {mse_w:.4e}  (NRMSE={nrmse_w:.2f}%)
+MSE_M:    {mse_M:.4e}  (NRMSE={nrmse_M:.2f}%)
+MSE_N:    {mse_N:.4e}  (RMSE={np.sqrt(mse_N):.0f} N)
+MSE_eps0: {mse_eps0:.4e}  (RMSE={np.sqrt(mse_eps0)*1e6:.2f} με)
+max|N_sec|: {np.max(np.abs(res['N_sec'])):.0f} N
+
+=== Notes ===
+"""
+    with open(os.path.join(RUN_DIR, "run_summary.txt"), "w") as f:
+        f.write(summary)
+
     print(f"\n  Saved to {os.path.abspath(RUN_DIR)}")
 
 

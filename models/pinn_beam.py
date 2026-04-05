@@ -185,17 +185,15 @@ class PINNBeamModel:
         # M 网络边界: M_net(0)=M_net(1)=0
         raw_losses["M_net_bc"] = (bc_fields["M_bar"][0:1] ** 2).mean() + \
                                   (bc_fields["M_bar"][1:2] ** 2).mean()
-        bc_dw = _grad(bc_fields["w_bar"], bc_xi)
-        bc_d2w = _grad(bc_dw, bc_xi)
-        bc_kappa_bar = -bc_d2w
 
-        bc_eps0_dim = bc_fields["eps0_bar"] * self.scales.eps_ref
-        bc_kappa_dim = bc_kappa_bar * self.scales.kap_ref
+        # 纤维截面边界 (κ=0 at supports)
         N_sec_bc_0, M_sec_bc_0 = self._section_response(
-            bc_eps0_dim[0:1], bc_kappa_dim[0:1], device,
+            bc_fields["eps0_bar"][0:1] * self.scales.eps_ref,
+            torch.zeros(1, 1, device=device), device,
         )
         N_sec_bc_1, M_sec_bc_1 = self._section_response(
-            bc_eps0_dim[1:2], bc_kappa_dim[1:2], device,
+            bc_fields["eps0_bar"][1:2] * self.scales.eps_ref,
+            torch.zeros(1, 1, device=device), device,
         )
 
         # M_sec 边界: M_sec(0)=M_sec(1)=0

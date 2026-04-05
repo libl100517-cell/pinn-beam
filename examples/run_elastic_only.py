@@ -302,6 +302,43 @@ def main():
     print(f"  MSE_M:    {mse_M:.4e}  (NRMSE={rmse_M:.2f}%)")
     print(f"  MSE_N:    {mse_N:.4e}  (RMSE={np.sqrt(mse_N):.0f} N)")
     print(f"  MSE_eps0: {mse_eps0:.4e}  (RMSE={np.sqrt(mse_eps0)*1e6:.2f} με)")
+
+    # ── Save run config & results summary ──
+    summary = f"""Run: {os.path.basename(RUN_DIR)}
+Date: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+=== Configuration ===
+Beam: L={L}mm, b={cfg.section_width}mm, h={cfg.section_height}mm
+Load: q={q}N/mm, N_applied={cfg.N_applied}N
+Material: Elastic (Ec={cfg.Ec}MPa)
+Rebar: {cfg.rebar_layout}
+
+=== PINN Architecture ===
+Networks: 3 (w, eps0, M), N from fiber section
+Hidden: {cfg.hidden_dims}, activation={cfg.activation}
+Norm coeffs: w={nc['w']:.3e}, M={nc['M']:.3e}, eps0={nc['eps0']:.3e}, N={nc['N']:.3e}
+
+=== Training ===
+Epochs: {cfg.n_epochs}, lr={cfg.learning_rate}
+Collocation: {cfg.n_collocation}, resample_every=500
+NTK: off
+Loss weights: {cfg.loss_weights}
+
+=== Results (vs analytical) ===
+w midspan:  PINN={res['w'][mid_p]:.4f}, Ref={w_ref[mid_r]:.4f}, Err={w_err:.2f}%
+M midspan:  PINN={res['M_net'][mid_p]:.0f}, Ref={M_ref[mid_r]:.0f}, Err={M_err:.2f}%
+
+MSE_w:    {mse_w:.4e}  (NRMSE={rmse_w:.2f}%)
+MSE_M:    {mse_M:.4e}  (NRMSE={rmse_M:.2f}%)
+MSE_N:    {mse_N:.4e}  (RMSE={np.sqrt(mse_N):.0f} N)
+MSE_eps0: {mse_eps0:.4e}  (RMSE={np.sqrt(mse_eps0)*1e6:.2f} με)
+max|N_sec|: {np.max(np.abs(res['N_sec'])):.0f} N
+
+=== Notes ===
+"""
+    with open(os.path.join(RUN_DIR, "run_summary.txt"), "w") as f:
+        f.write(summary)
+
     print(f"\n  Saved to {os.path.abspath(RUN_DIR)}")
 
 
