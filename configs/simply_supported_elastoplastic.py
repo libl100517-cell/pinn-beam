@@ -11,6 +11,6 @@ def get_config() -> BeamConfig:
         learning_rate=1e-4,
         n_collocation=200,
         activation="tanh",
-        q=40.0,  # higher load to trigger yielding
+        q=40.0,
         N_applied=0.0,
     )
