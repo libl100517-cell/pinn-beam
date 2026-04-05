@@ -60,6 +60,10 @@ def predict_all(pinn, xi, scales, device):
     d2w_dxi2 = _grad(dw_dxi, xi_dev)
     kappa_bar = -d2w_dxi2
 
+    # M derivatives: shear and load
+    dM_dxi = _grad(M_bar_net, xi_dev)
+    d2M_dxi2 = _grad(dM_dxi, xi_dev)
+
     eps0_dim = eps0_bar * scales.eps_ref
     kappa_dim = kappa_bar * scales.kap_ref
     N_sec_dim, M_sec_dim = pinn._section_response(eps0_dim, kappa_dim, device)
@@ -76,6 +80,9 @@ def predict_all(pinn, xi, scales, device):
             "M_net": M_bar_net.cpu().numpy().flatten() * scales.M_ref,
             "M_sec": M_sec_dim.cpu().numpy().flatten(),
             "N_sec": N_sec_dim.cpu().numpy().flatten(),
+            "theta": dw_dxi.cpu().numpy().flatten() * (scales.w_ref / L),
+            "V_net": dM_dxi.cpu().numpy().flatten() * (scales.M_ref / L),
+            "q_net": -d2M_dxi2.cpu().numpy().flatten() * (scales.M_ref / L**2),
         }
 
 
@@ -94,9 +101,25 @@ def main():
     print(f"  Concrete: fc={cfg.fc}, Ec={cfg.Ec}, eps_co={cfg.eps_co}, eps_cu={cfg.eps_cu}")
     print(f"  Steel: fy={cfg.fy}, Es={cfg.Es}, b={cfg.steel_b}")
 
-    # ── Build section (smooth nonlinear materials) ──
-    concrete = SmoothConcrete(fc=cfg.fc, Ec=cfg.Ec, eps_co=cfg.eps_co)
-    steel = BilinearSteel(fy=cfg.fy, Es=cfg.Es, b=cfg.steel_b)
+    # ── Build section (tension stiffening: concrete + adjusted steel) ──
+    concrete = SmoothConcrete(fc=cfg.fc, Ec=cfg.Ec, eps_co=cfg.eps_co,
+                              tension_model="stiffening", alpha_ts=200)
+
+    # Steel yield reduction: concrete carries part of the tension via bond
+    # Δfy = ft · Ac_eff / As, where Ac_eff = b · h_eff (effective tension area)
+    h = cfg.section_height
+    d_rebar = abs(cfg.rebar_layout[0][0])  # distance from centroid to rebar
+    c_bottom = h / 2 - d_rebar             # clear cover
+    h_eff = min(2.5 * c_bottom, h / 2)     # effective tension depth (EC2)
+    Ac_eff = cfg.section_width * h_eff
+    As = sum(a for _, a in cfg.rebar_layout)
+    delta_fy = concrete.ft * Ac_eff / As
+    fy_embedded = cfg.fy - delta_fy
+    print(f"  Tension stiffening: Ac_eff={Ac_eff:.0f}mm², As={As:.0f}mm²")
+    print(f"  Δfy = ft·Ac_eff/As = {concrete.ft:.1f}·{Ac_eff:.0f}/{As:.0f} = {delta_fy:.1f} MPa")
+    print(f"  fy_embedded = {cfg.fy:.0f} - {delta_fy:.1f} = {fy_embedded:.1f} MPa")
+
+    steel = BilinearSteel(fy=fy_embedded, Es=cfg.Es, b=cfg.steel_b)
     rc = RCRectSection(
         width=cfg.section_width, height=cfg.section_height,
         concrete=concrete, steel=steel,
@@ -160,57 +183,82 @@ def main():
     print(f"  Ref midspan:   w={ref['w'][mid_r]:.4f}, M={ref['M'][mid_r]:.0f}, "
           f"eps0={ref['eps0'][mid_r]:.6f}")
 
-    # ── Plot: 3x3 ──
-    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+    # ── Analytical references for shear and load ──
+    V_ref = q * (L / 2.0 - ref["x"])
+    q_ref_arr = np.full_like(ref["x"], q)
 
-    # Row 1: w, eps0, kappa
+    # ── Plot: 3x4 ──
+    # Row 1: w, rotation, curvature, eps0
+    # Row 2: M, shear V, distributed load q, N
+    # Row 3: M-κ, loss, concrete, steel
+    fig, axes = plt.subplots(3, 4, figsize=(24, 14))
+
+    # (0,0) Displacement
     ax = axes[0, 0]
     ax.plot(x, res["w"], "b-", lw=2, label="PINN")
-    ax.plot(ref["x"], ref["w"], "r--", lw=1.5, label="Bisection ref")
+    ax.plot(ref["x"], ref["w"], "r--", lw=1.5, label="Ref")
     ax.set_xlabel("x (mm)"); ax.set_ylabel("w (mm)")
     ax.set_title("Displacement w"); ax.legend(); ax.grid(True, alpha=0.3)
 
+    # (0,1) Rotation
     ax = axes[0, 1]
-    ax.plot(x, res["eps0"], "b-", lw=2, label="PINN")
-    ax.plot(ref["x"], ref["eps0"], "r--", lw=1.5, label="Bisection ref")
-    ax.set_xlabel("x (mm)"); ax.set_ylabel("eps0")
-    ax.set_title("Centroidal strain"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.plot(x, res["theta"], "b-", lw=2, label="PINN dw/dx")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("θ (rad)")
+    ax.set_title("Rotation w'"); ax.legend(); ax.grid(True, alpha=0.3)
 
+    # (0,2) Curvature
     ax = axes[0, 2]
     ax.plot(x, res["kappa"], "b-", lw=2, label="PINN")
-    ax.plot(ref["x"], ref["kappa"], "r--", lw=1.5, label="Bisection ref")
-    ax.set_xlabel("x (mm)"); ax.set_ylabel("kappa (1/mm)")
-    ax.set_title("Curvature"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.plot(ref["x"], ref["kappa"], "r--", lw=1.5, label="Ref")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("κ (1/mm)")
+    ax.set_title("Curvature -w''"); ax.legend(); ax.grid(True, alpha=0.3)
 
-    # Row 2: M, N, M-kappa
+    # (0,3) Centroidal strain
+    ax = axes[0, 3]
+    ax.plot(x, res["eps0"], "b-", lw=2, label="PINN")
+    ax.plot(ref["x"], ref["eps0"], "r--", lw=1.5, label="Ref")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("ε₀")
+    ax.set_title("Centroidal strain"); ax.legend(); ax.grid(True, alpha=0.3)
+
+    # (1,0) Bending moment
     ax = axes[1, 0]
-    ax.plot(x, res["M_net"] / 1e6, "b-", lw=2, label="M_net (network)")
-    ax.plot(x, res["M_sec"] / 1e6, "g-.", lw=1.5, label="M_sec (fiber)")
-    ax.plot(ref["x"], ref["M"] / 1e6, "r--", lw=1.5, label="Bisection ref")
-    ax.set_xlabel("x (mm)"); ax.set_ylabel("M (kN.m)")
-    ax.set_title("Bending moment"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.plot(x, res["M_net"] / 1e6, "b-", lw=2, label="M_net")
+    ax.plot(x, res["M_sec"] / 1e6, "g-.", lw=1.5, label="M_sec")
+    ax.plot(ref["x"], ref["M"] / 1e6, "r--", lw=1.5, label="Ref")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("M (kN·m)")
+    ax.set_title("Bending moment M"); ax.legend(); ax.grid(True, alpha=0.3)
 
+    # (1,1) Shear force
     ax = axes[1, 1]
-    ax.plot(x, res["N_sec"] / 1e3, "b-", lw=2, label="N_sec (fiber)")
-    ax.plot(ref["x"], ref["N"] / 1e3, "r--", lw=1.5, label="Bisection ref (≈0)")
-    ax.axhline(N_app / 1e3, color="gray", ls=":", lw=1, label=f"N_applied={N_app/1e3:.1f}kN")
-    ax.set_xlabel("x (mm)"); ax.set_ylabel("N (kN)")
-    ax.set_title("Axial force"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.plot(x, res["V_net"] / 1e3, "b-", lw=2, label="PINN dM/dx")
+    ax.plot(ref["x"], V_ref / 1e3, "r--", lw=1.5, label="Ref q(L/2-x)")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("V (kN)")
+    ax.set_title("Shear force M'"); ax.legend(); ax.grid(True, alpha=0.3)
 
+    # (1,2) Distributed load (equilibrium check: -M'' = q)
     ax = axes[1, 2]
-    ax.plot(kap_curve, M_curve / 1e6, "k-", lw=1.5, label="M-κ curve (section)")
-    ax.plot(res["kappa"], res["M_sec"] / 1e6, "b.", ms=3, label="PINN points")
-    ax.plot(ref["kappa"], ref["M"] / 1e6, "r+", ms=5, label="Bisection ref")
-    ax.set_xlabel("kappa (1/mm)"); ax.set_ylabel("M (kN.m)")
+    ax.plot(x, res["q_net"], "b-", lw=2, label="PINN -M''")
+    ax.plot(ref["x"], q_ref_arr, "r--", lw=1.5, label=f"q={q}")
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("q (N/mm)")
+    ax.set_title("Equilibrium -M''"); ax.legend(); ax.grid(True, alpha=0.3)
+
+    # (1,3) Axial force
+    ax = axes[1, 3]
+    ax.plot(x, res["N_sec"] / 1e3, "b-", lw=2, label="N_sec")
+    ax.plot(ref["x"], ref["N"] / 1e3, "r--", lw=1.5, label="Ref")
+    ax.axhline(N_app / 1e3, color="gray", ls=":", lw=1)
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("N (kN)")
+    ax.set_title("Axial force N"); ax.legend(); ax.grid(True, alpha=0.3)
+
+    # (2,0) M-κ relationship
+    ax = axes[2, 0]
+    ax.plot(kap_curve, M_curve / 1e6, "k-", lw=1.5, label="M-κ curve")
+    ax.plot(res["kappa"], res["M_sec"] / 1e6, "b.", ms=3, label="PINN")
+    ax.plot(ref["kappa"], ref["M"] / 1e6, "r+", ms=5, label="Ref")
+    ax.set_xlabel("κ (1/mm)"); ax.set_ylabel("M (kN·m)")
     ax.set_title("M-κ relationship"); ax.legend(); ax.grid(True, alpha=0.3)
 
-    # Row 3: const_M check, loss history, material curves
-    ax = axes[2, 0]
-    ax.plot(x, (res["M_net"] - res["M_sec"]) / 1e3, "b-", lw=1.5)
-    ax.axhline(0, color="r", ls="--", lw=1)
-    ax.set_xlabel("x (mm)"); ax.set_ylabel("M_net - M_sec (kN.mm)")
-    ax.set_title("Constitutive gap (M_net - M_sec)"); ax.grid(True, alpha=0.3)
-
+    # (2,1) Loss history
     ax = axes[2, 1]
     ax.semilogy(logger.loss_history, "k-", lw=1, label="Total")
     for name, hist in logger.component_history.items():
@@ -219,16 +267,23 @@ def main():
     ax.set_xlabel("Epoch"); ax.set_ylabel("Loss")
     ax.set_title("Loss history"); ax.legend(fontsize=6, ncol=2); ax.grid(True, alpha=0.3)
 
-    # Material stress-strain curves
+    # (2,2) Concrete
     ax = axes[2, 2]
-    eps_range = np.linspace(-0.004, 0.002, 300)
-    sig_c = [concrete.stress(torch.tensor([e])).item() for e in eps_range]
+    eps_c_range = np.linspace(-0.004, 0.003, 300)
+    sig_c = [concrete.stress(torch.tensor([e])).item() for e in eps_c_range]
+    ax.plot(eps_c_range * 1e3, np.array(sig_c), "b-", lw=1.5)
+    ax.axhline(0, color="k", lw=0.5); ax.axvline(0, color="k", lw=0.5)
+    ax.set_xlabel("strain (‰)"); ax.set_ylabel("stress (MPa)")
+    ax.set_title("Concrete σ-ε"); ax.grid(True, alpha=0.3)
+
+    # (2,3) Steel
+    ax = axes[2, 3]
     eps_s_range = np.linspace(-0.01, 0.01, 300)
     sig_s = [steel.stress(torch.tensor([e])).item() for e in eps_s_range]
-    ax.plot(eps_range * 1e3, np.array(sig_c), "b-", lw=1.5, label="Concrete (Smooth)")
-    ax.plot(eps_s_range * 1e3, np.array(sig_s), "r-", lw=1.5, label="Steel (bilinear)")
+    ax.plot(eps_s_range * 1e3, np.array(sig_s), "r-", lw=1.5)
+    ax.axhline(0, color="k", lw=0.5); ax.axvline(0, color="k", lw=0.5)
     ax.set_xlabel("strain (‰)"); ax.set_ylabel("stress (MPa)")
-    ax.set_title("Material curves"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.set_title(f"Steel σ-ε (fy={steel.fy:.0f})"); ax.grid(True, alpha=0.3)
 
     fig.suptitle(f"Nonlinear SS Beam: L={L}mm, q={q}N/mm, fc={cfg.fc}MPa, fy={cfg.fy}MPa",
                  fontsize=12)

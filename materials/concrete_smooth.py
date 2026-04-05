@@ -5,15 +5,13 @@ Compression (ε ≤ 0): Popovics curve
     η = -ε / |ε_co|,  n = Ec · |ε_co| / fc
     Exact: σ(ε_co) = -fc, dσ/dε(0⁻) = Ec
 
-Tension (ε > 0): Linear ascending + sharp exponential softening
-    σ = Ec · ε · exp(-relu_smooth(ε - ε_cr) / ε_f)
-    relu_smooth(x) = softplus(x·β)/β  with large β
-    Exact: dσ/dε(0⁺) = Ec, peak ≈ ft at ε = ε_cr
-
-torch.where supports autograd — gradients flow correctly.
-At ε = 0 both branches give 0, so the value is continuous.
-The tangent has a tiny discontinuity at ε = 0 only when n ≠ Ec·|ε_co|/fc,
-which is never the case here.
+Tension (ε > 0), two modes:
+  (a) Exponential softening (default):
+      σ = Ec · ε · exp(-relu_smooth(ε - ε_cr) / ε_f)
+  (b) Tension stiffening (Vecchio-Collins inspired):
+      σ = Ec · ε / (1 + √(α · relu_smooth(ε - ε_cr)))
+      Smooth, never reaches zero, captures bond effect with rebar.
+      α = 500 by default (Vecchio & Collins, 1986).
 """
 
 from typing import Dict
@@ -25,7 +23,7 @@ from .base_material import BaseMaterial
 
 
 class SmoothConcrete(BaseMaterial):
-    """Smooth concrete: Popovics compression + exponential tension.
+    """Smooth concrete: Popovics compression + configurable tension.
 
     Parameters
     ----------
@@ -37,8 +35,13 @@ class SmoothConcrete(BaseMaterial):
         Strain at peak compressive stress (negative, default -0.002).
     ft : float or None
         Tensile strength (positive, MPa). Default 0.62*sqrt(fc).
+    tension_model : str
+        "exp" for exponential softening, "stiffening" for Vecchio-Collins.
     eps_f : float or None
-        Tension softening decay scale. Default ε_cr.
+        Softening decay scale (only for "exp" model). Default ε_cr.
+    alpha_ts : float
+        Tension stiffening parameter (only for "stiffening" model).
+        Default 500 (Vecchio & Collins, 1986).
     """
 
     def __init__(
@@ -47,13 +50,17 @@ class SmoothConcrete(BaseMaterial):
         Ec: float = 30000.0,
         eps_co: float = -0.002,
         ft: float | None = None,
+        tension_model: str = "exp",
         eps_f: float | None = None,
+        alpha_ts: float = 500.0,
     ):
         self.fc = fc
         self.Ec = Ec
         self.eps_co = eps_co
         self.ft = ft if ft is not None else 0.62 * fc ** 0.5
+        self.tension_model = tension_model
         self.eps_f = eps_f if eps_f is not None else self.ft / self.Ec
+        self.alpha_ts = alpha_ts
 
     @property
     def n(self) -> float:
@@ -72,11 +79,24 @@ class SmoothConcrete(BaseMaterial):
         eta = (-strain / eps_co).clamp(min=1e-30)
         sigma_c = -self.fc * n * eta / (n - 1.0 + torch.pow(eta, n))
 
-        # --- Tension: Ec·ε · exp(-sharp_relu(ε - ε_cr) / ε_f) ---
-        # Sharp softplus so decay ≈ 0 for ε < ε_cr, ≈ (ε-ε_cr) for ε > ε_cr
-        beta = 100.0 / eps_cr  # sharpness: transition over ~1% of ε_cr
+        # --- Tension ---
+        beta = 100.0 / eps_cr
         relu_smooth = F.softplus((strain - eps_cr) * beta) / beta
-        sigma_t = self.Ec * strain * torch.exp(-relu_smooth / self.eps_f)
+
+        if self.tension_model == "stiffening":
+            # Tension stiffening (Vecchio-Collins inspired):
+            #   ε ≤ ε_cr: σ = Ec·ε (linear elastic)
+            #   ε > ε_cr: σ = ft / (1 + √(α · (ε - ε_cr)))
+            # Smooth version: cap numerator at ft using smooth min
+            sigma_linear = self.Ec * strain
+            # Smooth min(Ec·ε, ft): ft - softplus(ft - Ec·ε) ≈ Ec·ε for small ε, ≈ ft for large ε
+            beta_cap = 100.0 / self.ft
+            sigma_cap = self.ft - F.softplus((self.ft - sigma_linear) * beta_cap) / beta_cap
+            # Denominator: 1 + √(α · max(0, ε - ε_cr))
+            sigma_t = sigma_cap / (1.0 + torch.sqrt(self.alpha_ts * relu_smooth + 1e-20))
+        else:
+            # Exponential softening
+            sigma_t = self.Ec * strain * torch.exp(-relu_smooth / self.eps_f)
 
         return torch.where(strain <= 0, sigma_c, sigma_t)
 
