@@ -176,8 +176,7 @@ class PINNBeamModel:
         pointwise_residual = (const_M_ptw + equil_M_ptw + equil_N_ptw).detach()
 
         # === BC loss ===
-        bc_xi = xi_bc.detach().requires_grad_(True)
-        bc_fields = self.field_nets(bc_xi)
+        bc_fields = self.field_nets(xi_bc)
 
         # w 边界: w(0)=w(1)=0
         raw_losses["bc"] = (bc_fields["w_bar"][0:1] ** 2).mean() + \

@@ -105,21 +105,7 @@ def main():
     concrete = SmoothConcrete(fc=cfg.fc, Ec=cfg.Ec, eps_co=cfg.eps_co,
                               tension_model="stiffening", alpha_ts=200)
 
-    # Steel yield reduction: concrete carries part of the tension via bond
-    # Δfy = ft · Ac_eff / As, where Ac_eff = b · h_eff (effective tension area)
-    h = cfg.section_height
-    d_rebar = abs(cfg.rebar_layout[0][0])  # distance from centroid to rebar
-    c_bottom = h / 2 - d_rebar             # clear cover
-    h_eff = min(2.5 * c_bottom, h / 2)     # effective tension depth (EC2)
-    Ac_eff = cfg.section_width * h_eff
-    As = sum(a for _, a in cfg.rebar_layout)
-    delta_fy = concrete.ft * Ac_eff / As
-    fy_embedded = cfg.fy - delta_fy
-    print(f"  Tension stiffening: Ac_eff={Ac_eff:.0f}mm², As={As:.0f}mm²")
-    print(f"  Δfy = ft·Ac_eff/As = {concrete.ft:.1f}·{Ac_eff:.0f}/{As:.0f} = {delta_fy:.1f} MPa")
-    print(f"  fy_embedded = {cfg.fy:.0f} - {delta_fy:.1f} = {fy_embedded:.1f} MPa")
-
-    steel = BilinearSteel(fy=fy_embedded, Es=cfg.Es, b=cfg.steel_b)
+    steel = BilinearSteel(fy=cfg.fy, Es=cfg.Es, b=cfg.steel_b)
     rc = RCRectSection(
         width=cfg.section_width, height=cfg.section_height,
         concrete=concrete, steel=steel,
