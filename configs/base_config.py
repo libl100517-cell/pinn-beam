@@ -51,10 +51,10 @@ class BeamConfig:
         "equil_M": 1.0,
         "equil_N": 1e5,
         "const_M": 1.0,
-        "bc": 10.0,
-        "M_net_bc": 10.0,
-        "M_sec_bc": 10.0,
-        "N_sec_bc": 1e5,
+        "bc": 100.0,
+        "M_net_bc": 100.0,
+        "M_sec_bc": 100.0,
+        "N_sec_bc": 1e6,
         "data_disp": 1.0,
     })
 
