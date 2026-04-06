@@ -7,7 +7,7 @@ def get_config() -> BeamConfig:
     return BeamConfig(
         mode="forward",
         elastic=False,
-        n_epochs=20000,
+        n_epochs=10000,
         learning_rate=1e-4,
         n_collocation=200,
         activation="tanh",
