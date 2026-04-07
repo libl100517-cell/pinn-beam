@@ -151,7 +151,6 @@ class PINNBeamModel:
         N_bar_sec = self.scales.to_nondim_N(N_sec_dim)
 
         # === 本构 loss: M_net vs M_sec (L1) ===
-        # L1 对大残差梯度恒定，避免非线性区梯度爆炸主导训练
         const_M_ptw = torch.abs(M_bar_net - M_bar_sec)
 
         raw_losses = {

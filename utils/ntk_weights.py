@@ -1,23 +1,38 @@
-"""NTK-based adaptive loss weighting (Wang et al., 2021).
+"""Gradient-based adaptive loss weighting.
 
-Computes the trace of the Neural Tangent Kernel for each loss component
-and uses it to balance learning rates across loss terms.
+Two methods:
+1. NTK-based (Wang et al., 2021): max_ratio clipped
+2. GradNorm: no clip, log-space EMA for stability
 
-For each unweighted loss L_i, the NTK trace proxy is:
-    K_ii = ||∇_θ L_i||²
+For each loss L_i, compute gradient norm: g_i = ||∇_θ L_i||
 
-Adaptive weight for component i:
-    λ_i = mean(K) / K_ii
-
-This ensures all loss components have comparable effective learning rates.
-An exponential moving average smooths the weights across updates.
-Weights are clipped to [1/max_ratio, max_ratio] for stability.
+Adaptive weight: λ_i = g_mean / g_i
+This equalizes each loss component's gradient contribution.
 """
 
 from typing import Dict
 
 import torch
 import torch.nn as nn
+import math
+
+
+def _compute_grad_norms(
+    raw_losses: Dict[str, torch.Tensor],
+    parameters: list[nn.Parameter],
+) -> Dict[str, float]:
+    """Compute ||∇_θ L_i|| for each loss component."""
+    norms = {}
+    for name, loss in raw_losses.items():
+        grads = torch.autograd.grad(
+            loss, parameters, retain_graph=True, allow_unused=True,
+        )
+        norm = math.sqrt(sum(
+            g.detach().pow(2).sum().item()
+            for g in grads if g is not None
+        ))
+        norms[name] = norm
+    return norms
 
 
 def compute_ntk_weights(
@@ -27,54 +42,22 @@ def compute_ntk_weights(
     alpha: float = 0.1,
     max_ratio: float = 100.0,
 ) -> Dict[str, float]:
-    """Compute NTK-based adaptive weights.
+    """NTK-based adaptive weights with max_ratio clipping."""
+    norms = _compute_grad_norms(raw_losses, parameters)
 
-    Parameters
-    ----------
-    raw_losses : dict
-        Unweighted scalar loss tensors (with grad graphs attached).
-    parameters : list
-        Network parameters to differentiate against.
-    ema_weights : dict or None
-        Previous EMA weights. None on first call.
-    alpha : float
-        EMA smoothing factor. Higher = faster adaptation.
-    max_ratio : float
-        Maximum allowed weight ratio for stability.
-
-    Returns
-    -------
-    new_weights : dict
-        Updated adaptive weights for each loss component.
-    """
-    # Compute ||∇_θ L_i||² for each component
-    traces = {}
-    for name, loss in raw_losses.items():
-        grads = torch.autograd.grad(
-            loss, parameters, retain_graph=True, allow_unused=True,
-        )
-        trace = sum(
-            g.detach().pow(2).sum().item()
-            for g in grads if g is not None
-        )
-        traces[name] = trace
-
-    # Use mean trace as reference (more stable than max)
-    trace_values = [t for t in traces.values() if t > 0]
-    if not trace_values:
+    norm_values = [n for n in norms.values() if n > 0]
+    if not norm_values:
         return {name: 1.0 for name in raw_losses}
-    mean_trace = sum(trace_values) / len(trace_values)
+    mean_norm = sum(norm_values) / len(norm_values)
 
-    # Adaptive weights: λ_i = mean(K) / K_i, clipped
     raw_weights = {}
-    for name, trace in traces.items():
-        if trace > 0:
-            w = mean_trace / trace
+    for name, norm in norms.items():
+        if norm > 0:
+            w = mean_norm / norm
         else:
             w = max_ratio
         raw_weights[name] = max(1.0 / max_ratio, min(max_ratio, w))
 
-    # EMA smoothing
     if ema_weights is None:
         return raw_weights
 
@@ -83,3 +66,62 @@ def compute_ntk_weights(
         prev = ema_weights.get(name, raw_weights[name])
         new_weights[name] = (1 - alpha) * prev + alpha * raw_weights[name]
     return new_weights
+
+
+def compute_gradnorm_weights(
+    raw_losses: Dict[str, torch.Tensor],
+    parameters: list[nn.Parameter],
+    ema_log_weights: Dict[str, float] | None = None,
+    alpha: float = 0.05,
+) -> Dict[str, float]:
+    """GradNorm-style adaptive weights — no clipping, log-space EMA.
+
+    Uses log-space EMA to handle large dynamic range without clipping.
+    weight_i = exp(ema_log(mean_norm / norm_i))
+
+    Parameters
+    ----------
+    raw_losses : dict
+        Unweighted scalar loss tensors.
+    parameters : list
+        Network parameters.
+    ema_log_weights : dict or None
+        Previous EMA of log-weights. None on first call.
+    alpha : float
+        EMA smoothing in log space. Small = more stable.
+
+    Returns
+    -------
+    new_weights : dict
+        Adaptive weights.
+    """
+    norms = _compute_grad_norms(raw_losses, parameters)
+
+    norm_values = [n for n in norms.values() if n > 0]
+    if not norm_values:
+        return {name: 1.0 for name in raw_losses}
+
+    # Geometric mean (in log space) for better stability
+    log_mean = sum(math.log(n + 1e-30) for n in norm_values) / len(norm_values)
+
+    # log(weight_i) = log(geom_mean) - log(norm_i)
+    raw_log_weights = {}
+    for name, norm in norms.items():
+        if norm > 0:
+            raw_log_weights[name] = log_mean - math.log(norm)
+        else:
+            raw_log_weights[name] = 0.0
+
+    # EMA in log space
+    if ema_log_weights is None:
+        ema_log_weights = raw_log_weights
+    else:
+        ema_log_weights = {
+            name: (1 - alpha) * ema_log_weights.get(name, raw_log_weights[name])
+                  + alpha * raw_log_weights[name]
+            for name in raw_log_weights
+        }
+
+    # Convert back: weight = exp(log_weight)
+    weights = {name: math.exp(lw) for name, lw in ema_log_weights.items()}
+    return weights, ema_log_weights

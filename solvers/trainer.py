@@ -8,7 +8,7 @@ import torch
 
 from models.pinn_beam import PINNBeamModel
 from utils.logger import TrainingLogger
-from utils.ntk_weights import compute_ntk_weights
+from utils.ntk_weights import compute_ntk_weights, compute_gradnorm_weights
 from utils.sampling import residual_resample
 
 
@@ -43,6 +43,9 @@ class Trainer:
         ntk_alpha: float = 0.1,
         resample_every: int = 0,
         ntk_max_ratio: float = 100.0,
+        use_gradnorm: bool = False,
+        gradnorm_every: int = 100,
+        gradnorm_alpha: float = 0.05,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -53,7 +56,11 @@ class Trainer:
         self.ntk_alpha = ntk_alpha
         self.resample_every = resample_every
         self.ntk_max_ratio = ntk_max_ratio
+        self.use_gradnorm = use_gradnorm
+        self.gradnorm_every = gradnorm_every
+        self.gradnorm_alpha = gradnorm_alpha
         self._ntk_weights: Dict[str, float] | None = None
+        self._gradnorm_ema: Dict[str, float] | None = None
 
         # File logger
         self._file_logger = None
@@ -88,19 +95,30 @@ class Trainer:
         for epoch in range(1, n_epochs + 1):
             self.optimizer.zero_grad()
 
+            # Determine adaptive weights
+            adaptive_w = self._ntk_weights  # NTK or GradNorm weights
+
             loss, components, raw_losses, ptw_res = self.model.forward(
                 xi_col, xi_bc, q_bar,
                 xi_data=xi_data, w_data=w_data,
-                adaptive_weights=self._ntk_weights,
+                adaptive_weights=adaptive_w,
             )
 
-            # NTK weight update (before backward to reuse computation graph)
+            # NTK weight update
             if self.use_ntk and epoch % self.ntk_every == 1:
                 self._ntk_weights = compute_ntk_weights(
                     raw_losses, params,
                     ema_weights=self._ntk_weights,
                     alpha=self.ntk_alpha,
                     max_ratio=self.ntk_max_ratio,
+                )
+
+            # GradNorm weight update (no clipping, log-space EMA)
+            if self.use_gradnorm and epoch % self.gradnorm_every == 1:
+                self._ntk_weights, self._gradnorm_ema = compute_gradnorm_weights(
+                    raw_losses, params,
+                    ema_log_weights=self._gradnorm_ema,
+                    alpha=self.gradnorm_alpha,
                 )
 
             loss.backward()
@@ -118,7 +136,7 @@ class Trainer:
 
             # Logging
             self.logger.log_loss(loss.item(), components)
-            if self.use_ntk and self._ntk_weights:
+            if (self.use_ntk or self.use_gradnorm) and self._ntk_weights:
                 self.logger.log_ntk_weights(self._ntk_weights)
             if self.model.inverse_registry is not None:
                 self.logger.log_params(self.model.inverse_registry.get_values())
@@ -131,7 +149,7 @@ class Trainer:
                 if self.model.inverse_registry is not None:
                     for k, v in self.model.inverse_registry.get_values().items():
                         msg += f" | {k}={v:.1f}"
-                if self.use_ntk and self._ntk_weights:
+                if (self.use_ntk or self.use_gradnorm) and self._ntk_weights:
                     ntk_str = " ".join(f"{k}={v:.2f}" for k, v in self._ntk_weights.items())
                     msg += f" | NTK[{ntk_str}]"
                 self._log(msg)
