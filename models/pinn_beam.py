@@ -157,7 +157,7 @@ class PINNBeamModel:
             "const_M": const_M_ptw.mean(),
         }
 
-        # === 平衡 loss: M ===
+        # === 平衡 loss: M (L2 — 需要精细收敛) ===
         dM = _grad(M_bar_net, xi_col)
         d2M = _grad(dM, xi_col)
         C_eq = self.scales.A_ref * self.scales.L ** 2 / self.scales.I_ref
@@ -165,8 +165,7 @@ class PINNBeamModel:
         equil_M_ptw = equil_M_res ** 2
         raw_losses["equil_M"] = equil_M_ptw.mean()
 
-        # === 轴力平衡: dN_sec/dξ = 0 ===
-        # N_sec 来自截面积分，梯度穿过截面回传到 eps0 和 w 网络
+        # === 轴力平衡: dN_sec/dξ = 0 (L2) ===
         dN_sec = _grad(N_bar_sec, xi_col)
         equil_N_ptw = dN_sec ** 2
         raw_losses["equil_N"] = equil_N_ptw.mean()
@@ -177,11 +176,11 @@ class PINNBeamModel:
         # === BC loss ===
         bc_fields = self.field_nets(xi_bc)
 
-        # w 边界: w(0)=w(1)=0
+        # w 边界: w(0)=w(1)=0 (L2)
         raw_losses["bc"] = (bc_fields["w_bar"][0:1] ** 2).mean() + \
                            (bc_fields["w_bar"][1:2] ** 2).mean()
 
-        # M 网络边界: M_net(0)=M_net(1)=0
+        # M 网络边界: M_net(0)=M_net(1)=0 (L2)
         raw_losses["M_net_bc"] = (bc_fields["M_bar"][0:1] ** 2).mean() + \
                                   (bc_fields["M_bar"][1:2] ** 2).mean()
 
@@ -195,12 +194,12 @@ class PINNBeamModel:
             torch.zeros(1, 1, device=device), device,
         )
 
-        # M_sec 边界: M_sec(0)=M_sec(1)=0
+        # M_sec 边界: M_sec(0)=M_sec(1)=0 (L2)
         M_bc_bar_0 = self.scales.to_nondim_M(M_sec_bc_0)
         M_bc_bar_1 = self.scales.to_nondim_M(M_sec_bc_1)
         raw_losses["M_sec_bc"] = (M_bc_bar_0 ** 2).mean() + (M_bc_bar_1 ** 2).mean()
 
-        # N_sec 边界: N_sec = N_applied
+        # N_sec 边界: N_sec = N_applied (L2)
         N_bc_bar_0 = self.scales.to_nondim_N(N_sec_bc_0)
         N_bc_bar_1 = self.scales.to_nondim_N(N_sec_bc_1)
         raw_losses["N_sec_bc"] = ((N_bc_bar_0 - self.N_applied_bar) ** 2).mean() + \
