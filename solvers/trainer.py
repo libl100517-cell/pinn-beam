@@ -91,6 +91,8 @@ class Trainer:
         xi_data: torch.Tensor | None = None,
         w_data: torch.Tensor | None = None,
         print_every: int = 500,
+        snapshot_fn=None,
+        snapshot_every: int = 0,
     ) -> TrainingLogger:
         """Run the training loop. Returns the TrainingLogger."""
         params = list(self.model.field_nets.parameters())
@@ -167,5 +169,9 @@ class Trainer:
                     ntk_str = " ".join(f"{k}={v:.2f}" for k, v in self._ntk_weights.items())
                     msg += f" | NTK[{ntk_str}]"
                 self._log(msg)
+
+            # Snapshot callback
+            if snapshot_fn and snapshot_every > 0 and epoch % snapshot_every == 0:
+                snapshot_fn(epoch)
 
         return self.logger

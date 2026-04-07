@@ -156,11 +156,65 @@ def main():
                       warmup_keys=["equil_N", "N_sec_bc"],
                       warmup_epochs=cfg.n_epochs // 2)
 
+    # ── Snapshot function: save comparison plots during training ──
+    snap_dir = os.path.join(RUN_DIR, "snapshots")
+    os.makedirs(snap_dir, exist_ok=True)
+    xi_plot = torch.linspace(0, 1, 200).unsqueeze(1)
+
+    def save_snapshot(epoch):
+        res_snap = predict_all(pinn, xi_plot, scales, device)
+        x_snap = res_snap["x"]
+
+        fig_snap, axes_snap = plt.subplots(2, 3, figsize=(18, 8))
+
+        # w
+        ax = axes_snap[0, 0]
+        ax.plot(x_snap, res_snap["w"], "b-", lw=2, label="PINN")
+        ax.plot(ref["x"], ref["w"], "r--", lw=1.5, label="Ref")
+        ax.set_title("w"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+        # kappa
+        ax = axes_snap[0, 1]
+        ax.plot(x_snap, res_snap["kappa"], "b-", lw=2, label="PINN")
+        ax.plot(ref["x"], ref["kappa"], "r--", lw=1.5, label="Ref")
+        ax.set_title("κ"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+        # eps0
+        ax = axes_snap[0, 2]
+        ax.plot(x_snap, res_snap["eps0"], "b-", lw=2, label="PINN")
+        ax.plot(ref["x"], ref["eps0"], "r--", lw=1.5, label="Ref")
+        ax.set_title("ε₀"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+        # M
+        ax = axes_snap[1, 0]
+        ax.plot(x_snap, res_snap["M_net"] / 1e6, "b-", lw=2, label="M_net")
+        ax.plot(x_snap, res_snap["M_sec"] / 1e6, "g-.", lw=1.5, label="M_sec")
+        ax.plot(ref["x"], ref["M"] / 1e6, "r--", lw=1.5, label="Ref")
+        ax.set_title("M (kN·m)"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+        # N
+        ax = axes_snap[1, 1]
+        ax.plot(x_snap, res_snap["N_sec"] / 1e3, "b-", lw=2, label="N_sec")
+        ax.axhline(0, color="r", ls="--", lw=1)
+        ax.set_title("N (kN)"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+        # M-kappa
+        ax = axes_snap[1, 2]
+        ax.plot(kap_curve, M_curve / 1e6, "k-", lw=1, alpha=0.5)
+        ax.plot(res_snap["kappa"], res_snap["M_sec"] / 1e6, "b.", ms=2)
+        ax.plot(ref["kappa"], ref["M"] / 1e6, "r+", ms=4)
+        ax.set_title("M-κ"); ax.grid(True, alpha=0.3)
+
+        fig_snap.suptitle(f"Epoch {epoch}", fontsize=12)
+        fig_snap.tight_layout()
+        fig_snap.savefig(os.path.join(snap_dir, f"epoch_{epoch:05d}.png"), dpi=100)
+        plt.close(fig_snap)
+
     print(f"\n  Training {cfg.n_epochs} epochs (nonlinear) ...")
-    logger = trainer.train(xi_col, xi_bc, q_bar, cfg.n_epochs)
+    logger = trainer.train(xi_col, xi_bc, q_bar, cfg.n_epochs,
+                           snapshot_fn=save_snapshot, snapshot_every=1000)
 
     # ── Predict ──
-    xi_plot = torch.linspace(0, 1, 200).unsqueeze(1)
     res = predict_all(pinn, xi_plot, scales, device)
     x = res["x"]
     mid_p = len(x) // 2
