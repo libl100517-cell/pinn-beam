@@ -320,6 +320,72 @@ def main():
     fig.savefig(os.path.join(RUN_DIR, "nonlinear_fields.png"), dpi=150)
     plt.close(fig)
 
+    # ── Stress contour plot (L × h) ──
+    n_y = 50  # vertical resolution
+    y_arr = np.linspace(-h/2, h/2, n_y)  # bottom to top
+    X_grid, Y_grid = np.meshgrid(x, y_arr)
+
+    # Compute concrete stress at every (x, y): σ = concrete.stress(ε₀ - κ·y)
+    stress_grid = np.zeros_like(X_grid)
+    for j, yj in enumerate(y_arr):
+        strain_j = res["eps0"] - res["kappa"] * yj
+        strain_t = torch.tensor(strain_j, dtype=torch.float32)
+        with torch.no_grad():
+            stress_grid[j, :] = concrete.stress(strain_t).numpy()
+
+    # Reference concrete stress field
+    from scipy.interpolate import interp1d
+    ref_eps0_on_x = interp1d(ref["x"], ref["eps0"], kind="cubic")(x)
+    ref_kappa_on_x = interp1d(ref["x"], ref["kappa"], kind="cubic")(x)
+    stress_ref_grid = np.zeros_like(X_grid)
+    for j, yj in enumerate(y_arr):
+        strain_j = ref_eps0_on_x - ref_kappa_on_x * yj
+        strain_t = torch.tensor(strain_j, dtype=torch.float32)
+        with torch.no_grad():
+            stress_ref_grid[j, :] = concrete.stress(strain_t).numpy()
+
+    ft = concrete.ft
+    fc_neg = -cfg.fc
+    vmin = min(stress_grid.min(), stress_ref_grid.min(), fc_neg * 1.1)
+    vmax = max(stress_grid.max(), stress_ref_grid.max(), ft * 1.5)
+
+    fig_s, axes_s = plt.subplots(2, 1, figsize=(18, 8), sharex=True)
+
+    for ax_s, sgrid, title in [
+        (axes_s[0], stress_grid, "PINN"),
+        (axes_s[1], stress_ref_grid, "Reference (bisection)"),
+    ]:
+        im = ax_s.pcolormesh(X_grid, Y_grid, sgrid, cmap="RdBu_r",
+                             vmin=vmin, vmax=vmax, shading="auto")
+        # Zero stress contour (neutral axis)
+        cs0 = ax_s.contour(X_grid, Y_grid, sgrid, levels=[0],
+                           colors="k", linewidths=2)
+        ax_s.clabel(cs0, fmt="0", fontsize=8)
+        # Tension limit contour
+        if sgrid.max() > ft > 0:
+            cs_t = ax_s.contour(X_grid, Y_grid, sgrid, levels=[ft],
+                                colors="lime", linewidths=1.5, linestyles="--")
+            ax_s.clabel(cs_t, fmt=f"ft={ft:.1f}", fontsize=7)
+        # Compression limit contour
+        if sgrid.min() < fc_neg:
+            cs_c = ax_s.contour(X_grid, Y_grid, sgrid, levels=[fc_neg],
+                                colors="cyan", linewidths=1.5, linestyles="--")
+            ax_s.clabel(cs_c, fmt=f"fc={fc_neg:.0f}", fontsize=7)
+        # Mark rebar positions
+        for y_rebar, _ in cfg.rebar_layout:
+            ax_s.axhline(y_rebar, color="gray", ls="-", lw=0.5, alpha=0.5)
+        ax_s.set_ylabel("y (mm)")
+        ax_s.set_title(title)
+        ax_s.set_aspect("auto")
+        fig_s.colorbar(im, ax=ax_s, label="σ_concrete (MPa)", shrink=0.8)
+
+    axes_s[1].set_xlabel("x (mm)")
+    fig_s.suptitle("Concrete stress contour", fontsize=12)
+    fig_s.tight_layout()
+    fig_s.savefig(os.path.join(RUN_DIR, "stress_contour.png"), dpi=150)
+    plt.close(fig_s)
+    print(f"  Stress contour saved.")
+
     # ── Pointwise MSE ──
     # Interpolate reference to PINN grid
     from scipy.interpolate import interp1d
