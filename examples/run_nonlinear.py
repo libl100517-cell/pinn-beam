@@ -150,7 +150,8 @@ def main():
     q_bar = scales.to_nondim_q(q)
 
     optimizer = torch.optim.Adam(field_nets.parameters(), lr=cfg.learning_rate)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.n_epochs)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=cfg.n_epochs // 4, T_mult=2)
     trainer = Trainer(pinn, optimizer, scheduler, log_dir=RUN_DIR,
                       use_ntk=False, resample_every=500,
                       warmup_keys=["equil_N", "N_sec_bc"],
