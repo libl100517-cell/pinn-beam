@@ -46,6 +46,8 @@ class Trainer:
         use_gradnorm: bool = False,
         gradnorm_every: int = 100,
         gradnorm_alpha: float = 0.05,
+        warmup_keys: list | None = None,
+        warmup_epochs: int = 0,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -61,6 +63,8 @@ class Trainer:
         self.gradnorm_alpha = gradnorm_alpha
         self._ntk_weights: Dict[str, float] | None = None
         self._gradnorm_ema: Dict[str, float] | None = None
+        self.warmup_keys = warmup_keys or []
+        self.warmup_epochs = warmup_epochs
 
         # File logger
         self._file_logger = None
@@ -95,8 +99,18 @@ class Trainer:
         for epoch in range(1, n_epochs + 1):
             self.optimizer.zero_grad()
 
-            # Determine adaptive weights
-            adaptive_w = self._ntk_weights  # NTK or GradNorm weights
+            # Weight warmup: ramp specified keys from 0 to 1 over warmup_epochs
+            warmup_w = None
+            if self.warmup_keys and self.warmup_epochs > 0:
+                ramp = min(epoch / self.warmup_epochs, 1.0)
+                warmup_w = {k: ramp for k in self.warmup_keys}
+
+            # Merge adaptive + warmup weights
+            adaptive_w = self._ntk_weights
+            if warmup_w:
+                adaptive_w = dict(adaptive_w) if adaptive_w else {}
+                for k, v in warmup_w.items():
+                    adaptive_w[k] = adaptive_w.get(k, 1.0) * v
 
             loss, components, raw_losses, ptw_res = self.model.forward(
                 xi_col, xi_bc, q_bar,

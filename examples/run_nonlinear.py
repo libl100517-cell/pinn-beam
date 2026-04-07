@@ -152,7 +152,9 @@ def main():
     optimizer = torch.optim.Adam(field_nets.parameters(), lr=cfg.learning_rate)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.n_epochs)
     trainer = Trainer(pinn, optimizer, scheduler, log_dir=RUN_DIR,
-                      use_ntk=False, resample_every=500)
+                      use_ntk=False, resample_every=500,
+                      warmup_keys=["equil_N", "N_sec_bc"],
+                      warmup_epochs=cfg.n_epochs // 2)
 
     print(f"\n  Training {cfg.n_epochs} epochs (nonlinear) ...")
     logger = trainer.train(xi_col, xi_bc, q_bar, cfg.n_epochs)
