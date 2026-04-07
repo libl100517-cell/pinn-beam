@@ -185,11 +185,6 @@ class PINNBeamModel:
         raw_losses["M_net_bc"] = (bc_fields["M_bar"][0:1] ** 2).mean() + \
                                   (bc_fields["M_bar"][1:2] ** 2).mean()
 
-        # eps0 边界: eps0(0)=eps0(1)≈0（支座处 κ=0,N=0 → eps0=0）
-        eps0_bc_target = self.N_applied_bar / (self.scales.E_ref * self.scales.A_ref / self.scales.F_ref)
-        raw_losses["eps0_bc"] = ((bc_fields["eps0_bar"][0:1] - eps0_bc_target) ** 2).mean() + \
-                                 ((bc_fields["eps0_bar"][1:2] - eps0_bc_target) ** 2).mean()
-
         # 纤维截面边界 (κ=0 at supports)
         N_sec_bc_0, M_sec_bc_0 = self._section_response(
             bc_fields["eps0_bar"][0:1] * self.scales.eps_ref,

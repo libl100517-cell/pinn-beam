@@ -53,7 +53,6 @@ class BeamConfig:
         "const_M": 1.0,
         "bc": 100.0,
         "M_net_bc": 100.0,
-        "eps0_bc": 100.0,
         "M_sec_bc": 100.0,
         "N_sec_bc": 1e6,
         "data_disp": 1.0,
