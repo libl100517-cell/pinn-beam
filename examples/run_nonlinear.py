@@ -175,11 +175,22 @@ def main():
     # Rotation from reference: θ = dw/dx ≈ finite difference
     theta_ref = np.gradient(ref["w"], ref["x"])
 
-    # ── Plot: 3x4 ──
+    # ── Compute top/bottom strains ──
+    h = cfg.section_height
+    y_top = h / 2.0    # top fiber (compression for sagging)
+    y_bot = -h / 2.0   # bottom fiber (tension for sagging)
+    # ε = ε₀ - κ·y
+    eps_top_pinn = res["eps0"] - res["kappa"] * y_top
+    eps_bot_pinn = res["eps0"] - res["kappa"] * y_bot
+    eps_top_ref = ref["eps0"] - ref["kappa"] * y_top
+    eps_bot_ref = ref["eps0"] - ref["kappa"] * y_bot
+
+    # ── Plot: 4x4 ──
     # Row 1: w, rotation, curvature, eps0
-    # Row 2: M, shear V, distributed load q, N
-    # Row 3: M-κ, loss, concrete, steel
-    fig, axes = plt.subplots(3, 4, figsize=(24, 14))
+    # Row 2: M, shear V, equilibrium, N
+    # Row 3: M-κ, ε₀-κ, ε_top-κ, ε_bot-κ
+    # Row 4: loss, concrete, steel, (blank)
+    fig, axes = plt.subplots(4, 4, figsize=(24, 20))
 
     # (0,0) Displacement
     ax = axes[0, 0]
@@ -247,8 +258,32 @@ def main():
     ax.set_xlabel("κ (1/mm)"); ax.set_ylabel("M (kN·m)")
     ax.set_title("M-κ relationship"); ax.legend(); ax.grid(True, alpha=0.3)
 
-    # (2,1) Loss history
+    # (2,1) ε₀-κ relationship
     ax = axes[2, 1]
+    ax.plot(res["kappa"], res["eps0"] * 1e3, "b.", ms=3, label="PINN ε₀")
+    ax.plot(ref["kappa"], ref["eps0"] * 1e3, "r+", ms=5, label="Ref ε₀")
+    ax.set_xlabel("κ (1/mm)"); ax.set_ylabel("ε₀ (‰)")
+    ax.set_title("ε₀-κ"); ax.legend(); ax.grid(True, alpha=0.3)
+
+    # (2,2) ε_top-κ relationship
+    ax = axes[2, 2]
+    ax.plot(res["kappa"], eps_top_pinn * 1e3, "b.", ms=3, label="PINN ε_top")
+    ax.plot(ref["kappa"], eps_top_ref * 1e3, "r+", ms=5, label="Ref ε_top")
+    ax.axhline(-2.0, color="gray", ls=":", lw=1, label="ε_co=-2‰")
+    ax.set_xlabel("κ (1/mm)"); ax.set_ylabel("ε_top (‰)")
+    ax.set_title(f"ε_top-κ (y={y_top:.0f}mm)"); ax.legend(); ax.grid(True, alpha=0.3)
+
+    # (2,3) ε_bot-κ relationship
+    ax = axes[2, 3]
+    ax.plot(res["kappa"], eps_bot_pinn * 1e3, "b.", ms=3, label="PINN ε_bot")
+    ax.plot(ref["kappa"], eps_bot_ref * 1e3, "r+", ms=5, label="Ref ε_bot")
+    eps_y = steel.fy / steel.Es
+    ax.axhline(eps_y * 1e3, color="gray", ls=":", lw=1, label=f"ε_y={eps_y*1e3:.2f}‰")
+    ax.set_xlabel("κ (1/mm)"); ax.set_ylabel("ε_bot (‰)")
+    ax.set_title(f"ε_bot-κ (y={y_bot:.0f}mm)"); ax.legend(); ax.grid(True, alpha=0.3)
+
+    # (3,0) Loss history
+    ax = axes[3, 0]
     ax.semilogy(logger.loss_history, "k-", lw=1, label="Total")
     for name, hist in logger.component_history.items():
         if name != "total":
@@ -256,8 +291,8 @@ def main():
     ax.set_xlabel("Epoch"); ax.set_ylabel("Loss")
     ax.set_title("Loss history"); ax.legend(fontsize=6, ncol=2); ax.grid(True, alpha=0.3)
 
-    # (2,2) Concrete
-    ax = axes[2, 2]
+    # (3,1) Concrete
+    ax = axes[3, 1]
     eps_c_range = np.linspace(-0.004, 0.003, 300)
     sig_c = [concrete.stress(torch.tensor([e])).item() for e in eps_c_range]
     ax.plot(eps_c_range * 1e3, np.array(sig_c), "b-", lw=1.5)
@@ -265,14 +300,17 @@ def main():
     ax.set_xlabel("strain (‰)"); ax.set_ylabel("stress (MPa)")
     ax.set_title("Concrete σ-ε"); ax.grid(True, alpha=0.3)
 
-    # (2,3) Steel
-    ax = axes[2, 3]
+    # (3,2) Steel
+    ax = axes[3, 2]
     eps_s_range = np.linspace(-0.01, 0.01, 300)
     sig_s = [steel.stress(torch.tensor([e])).item() for e in eps_s_range]
     ax.plot(eps_s_range * 1e3, np.array(sig_s), "r-", lw=1.5)
     ax.axhline(0, color="k", lw=0.5); ax.axvline(0, color="k", lw=0.5)
     ax.set_xlabel("strain (‰)"); ax.set_ylabel("stress (MPa)")
     ax.set_title(f"Steel σ-ε (fy={steel.fy:.0f})"); ax.grid(True, alpha=0.3)
+
+    # (3,3) blank
+    axes[3, 3].axis("off")
 
     fig.suptitle(f"Nonlinear SS Beam: L={L}mm, q={q}N/mm, fc={cfg.fc}MPa, fy={cfg.fy}MPa",
                  fontsize=12)
