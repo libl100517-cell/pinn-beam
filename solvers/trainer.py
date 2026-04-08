@@ -93,10 +93,25 @@ class Trainer:
         print_every: int = 500,
         snapshot_fn=None,
         snapshot_every: int = 0,
+        lbfgs_after: int = 0,
+        lbfgs_epochs: int = 500,
+        save_dir: str | None = None,
     ) -> TrainingLogger:
-        """Run the training loop. Returns the TrainingLogger."""
+        """Run the training loop. Returns the TrainingLogger.
+
+        Parameters
+        ----------
+        lbfgs_after : int
+            Switch to L-BFGS after this many Adam epochs. 0 = disabled.
+        lbfgs_epochs : int
+            Number of L-BFGS iterations after switching.
+        save_dir : str or None
+            Directory to save best/last model weights.
+        """
         params = list(self.model.field_nets.parameters())
         n_col = xi_col.shape[0]
+        best_loss = float("inf")
+        best_state = None
 
         for epoch in range(1, n_epochs + 1):
             self.optimizer.zero_grad()
@@ -189,5 +204,68 @@ class Trainer:
             # Snapshot callback
             if snapshot_fn and snapshot_every > 0 and epoch % snapshot_every == 0:
                 snapshot_fn(epoch)
+
+            # Track best model
+            cur_loss = loss.item()
+            if cur_loss < best_loss:
+                best_loss = cur_loss
+                best_state = {k: v.clone() for k, v in
+                              self.model.field_nets.state_dict().items()}
+
+        # === L-BFGS fine-tuning phase ===
+        if lbfgs_after > 0 and lbfgs_epochs > 0:
+            self._log(f"\n  Switching to L-BFGS for {lbfgs_epochs} iterations...")
+            lbfgs_opt = torch.optim.LBFGS(
+                self.model.field_nets.parameters(),
+                lr=1.0, max_iter=20, history_size=50,
+                line_search_fn="strong_wolfe",
+            )
+
+            # Use full weights (warmup complete)
+            final_w = {}
+            for k in self.warmup_keys:
+                final_w[k] = 1.0
+
+            for lbfgs_ep in range(1, lbfgs_epochs + 1):
+                def closure():
+                    lbfgs_opt.zero_grad()
+                    loss_l, _, _, _ = self.model.forward(
+                        xi_col, xi_bc, q_bar,
+                        xi_data=xi_data, w_data=w_data,
+                        adaptive_weights=final_w if final_w else None,
+                    )
+                    loss_l.backward()
+                    return loss_l
+
+                lbfgs_opt.step(closure)
+
+                # Evaluate for logging
+                loss_eval, comp_eval, _, _ = self.model.forward(
+                    xi_col, xi_bc, q_bar,
+                    xi_data=xi_data, w_data=w_data,
+                    adaptive_weights=final_w if final_w else None,
+                )
+                self.logger.log_loss(loss_eval.item(), comp_eval)
+                self.logger.lr_history.append(1.0)
+
+                if loss_eval.item() < best_loss:
+                    best_loss = loss_eval.item()
+                    best_state = {k: v.clone() for k, v in
+                                  self.model.field_nets.state_dict().items()}
+
+                if lbfgs_ep % 100 == 0 or lbfgs_ep == 1:
+                    self._log(f"  L-BFGS {lbfgs_ep:>5d} | loss = {loss_eval.item():.6e}")
+
+                if snapshot_fn and snapshot_every > 0 and lbfgs_ep % snapshot_every == 0:
+                    snapshot_fn(n_epochs + lbfgs_ep)
+
+        # === Save weights ===
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save(self.model.field_nets.state_dict(),
+                       os.path.join(save_dir, "last.pt"))
+            if best_state is not None:
+                torch.save(best_state, os.path.join(save_dir, "best.pt"))
+            self._log(f"  Saved best (loss={best_loss:.6e}) and last weights.")
 
         return self.logger

@@ -213,9 +213,11 @@ def main():
         fig_snap.savefig(os.path.join(snap_dir, f"epoch_{epoch:05d}.png"), dpi=100)
         plt.close(fig_snap)
 
-    print(f"\n  Training {cfg.n_epochs} epochs (nonlinear) ...")
+    print(f"\n  Training {cfg.n_epochs} epochs (nonlinear) + L-BFGS ...")
     logger = trainer.train(xi_col, xi_bc, q_bar, cfg.n_epochs,
-                           snapshot_fn=save_snapshot, snapshot_every=1000)
+                           snapshot_fn=save_snapshot, snapshot_every=1000,
+                           lbfgs_after=cfg.n_epochs, lbfgs_epochs=500,
+                           save_dir=os.path.join(RUN_DIR, "weights"))
 
     # ── Predict ──
     res = predict_all(pinn, xi_plot, scales, device)
