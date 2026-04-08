@@ -120,8 +120,10 @@ class Trainer:
                 adaptive_weights=adaptive_w,
             )
 
-            # NTK weight update
-            if self.use_ntk and epoch % self.ntk_every == 1:
+            # NTK/GradNorm: only after warmup completes
+            adaptive_ready = (epoch > self.warmup_epochs) if self.warmup_epochs > 0 else True
+
+            if adaptive_ready and self.use_ntk and epoch % self.ntk_every == 1:
                 self._ntk_weights = compute_ntk_weights(
                     raw_losses, params,
                     ema_weights=self._ntk_weights,
@@ -129,8 +131,7 @@ class Trainer:
                     max_ratio=self.ntk_max_ratio,
                 )
 
-            # GradNorm weight update (no clipping, log-space EMA)
-            if self.use_gradnorm and epoch % self.gradnorm_every == 1:
+            if adaptive_ready and self.use_gradnorm and epoch % self.gradnorm_every == 1:
                 self._ntk_weights, self._gradnorm_ema = compute_gradnorm_weights(
                     raw_losses, params,
                     ema_log_weights=self._gradnorm_ema,
