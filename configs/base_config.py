@@ -37,7 +37,7 @@ class BeamConfig:
     N_applied: float = 0.0             # N     applied axial force (+ tension)
 
     # --- PINN architecture ---
-    hidden_dims: List[int] = field(default_factory=lambda: [32, 32, 32])
+    hidden_dims: List[int] = field(default_factory=lambda: [32, 32, 32, 32, 32])
     activation: str = "tanh"
     use_fourier: bool = False
     n_frequencies: int = 16
