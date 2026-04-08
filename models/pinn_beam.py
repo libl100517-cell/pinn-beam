@@ -157,7 +157,7 @@ class PINNBeamModel:
             "const_M": const_M_ptw.mean(),
         }
 
-        # === 平衡 loss: M (L2 — 需要精细收敛) ===
+        # === 平衡 loss: M (L2) ===
         dM = _grad(M_bar_net, xi_col)
         d2M = _grad(dM, xi_col)
         C_eq = self.scales.A_ref * self.scales.L ** 2 / self.scales.I_ref
