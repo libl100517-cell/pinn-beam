@@ -52,12 +52,12 @@ class BeamConfig:
     # --- loss weights ---
     loss_weights: Dict[str, float] = field(default_factory=lambda: {
         "equil_M": 100.0,
-        "equil_N": 1e3,
+        "equil_N": 1e4,
         "const_M": 10.0,
         "bc": 100.0,
         "M_net_bc": 100.0,
         "M_sec_bc": 100.0,
-        "N_sec_bc": 1e4,
+        "N_sec_bc": 1e5,
         "data_disp": 1.0,
     })
 
