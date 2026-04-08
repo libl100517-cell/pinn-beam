@@ -150,8 +150,8 @@ class PINNBeamModel:
         M_bar_sec = self.scales.to_nondim_M(M_sec_dim)
         N_bar_sec = self.scales.to_nondim_N(N_sec_dim)
 
-        # === 本构 loss: M_net vs M_sec (L1) ===
-        const_M_ptw = torch.abs(M_bar_net - M_bar_sec)
+        # === 本构 loss: M_net vs M_sec (L2) ===
+        const_M_ptw = (M_bar_net - M_bar_sec) ** 2
 
         raw_losses = {
             "const_M": const_M_ptw.mean(),

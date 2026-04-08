@@ -39,6 +39,9 @@ class BeamConfig:
     # --- PINN architecture ---
     hidden_dims: List[int] = field(default_factory=lambda: [32, 32, 32])
     activation: str = "tanh"
+    use_fourier: bool = False
+    n_frequencies: int = 16
+    fourier_sigma: float = 1.0
 
     # --- training ---
     n_collocation: int = 50

@@ -137,6 +137,8 @@ def main():
     field_nets = FieldNetworks(
         hidden_dims=cfg.hidden_dims, activation=cfg.activation,
         norm_coeffs=nc,
+        use_fourier=cfg.use_fourier, n_frequencies=cfg.n_frequencies,
+        fourier_sigma=cfg.fourier_sigma,
     ).to(device)
     pinn = PINNBeamModel(
         field_nets=field_nets, section=rc.section, scales=scales,

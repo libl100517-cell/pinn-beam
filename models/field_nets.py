@@ -16,7 +16,7 @@ from typing import Dict, List
 import torch
 import torch.nn as nn
 
-from .mlp import MLP
+from .mlp import MLP, FourierMLP
 
 
 class FieldNetworks(nn.Module):
@@ -27,9 +27,12 @@ class FieldNetworks(nn.Module):
     hidden_dims : list of int
     activation : str
     norm_coeffs : dict, optional
-        {"w": float, "M": float, "eps0": float}.
-        Each network's raw output is multiplied by its coefficient.
-        Default all 1.0 (no normalization).
+    use_fourier : bool
+        Use Fourier feature embedding before MLP.
+    n_frequencies : int
+        Number of Fourier frequencies (if use_fourier=True).
+    fourier_sigma : float
+        Std of random frequency matrix.
     """
 
     def __init__(
@@ -37,13 +40,22 @@ class FieldNetworks(nn.Module):
         hidden_dims: List[int] | None = None,
         activation: str = "tanh",
         norm_coeffs: Dict[str, float] | None = None,
+        use_fourier: bool = False,
+        n_frequencies: int = 16,
+        fourier_sigma: float = 1.0,
     ):
         super().__init__()
         hidden_dims = hidden_dims or [32, 32, 32]
 
-        self.net_w = MLP(1, 1, hidden_dims, activation)
-        self.net_eps0 = MLP(1, 1, hidden_dims, activation)
-        self.net_M = MLP(1, 1, hidden_dims, activation)
+        if use_fourier:
+            Net = lambda: FourierMLP(1, 1, hidden_dims, activation,
+                                     n_frequencies, fourier_sigma)
+        else:
+            Net = lambda: MLP(1, 1, hidden_dims, activation)
+
+        self.net_w = Net()
+        self.net_eps0 = Net()
+        self.net_M = Net()
 
         c = norm_coeffs or {}
         self.register_buffer("c_w",    torch.tensor(c.get("w", 1.0)))

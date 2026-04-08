@@ -13,4 +13,5 @@ def get_config() -> BeamConfig:
         activation="tanh",
         q=40.0,
         N_applied=0.0,
+        use_fourier=False,
     )

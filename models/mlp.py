@@ -66,3 +66,48 @@ class SinActivation(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.sin(x)
+
+
+class FourierMLP(nn.Module):
+    """MLP with Fourier feature embedding (Tancik et al., 2020).
+
+    Maps input x to [sin(2π·B·x), cos(2π·B·x)] before the MLP,
+    where B is a fixed random frequency matrix. This helps networks
+    learn high-frequency features that plain MLPs struggle with.
+
+    Parameters
+    ----------
+    in_dim : int
+    out_dim : int
+    hidden_dims : list of int
+    activation : str
+    n_frequencies : int
+        Number of Fourier frequencies. Input dimension becomes 2*n_frequencies.
+    sigma : float
+        Std of random frequency matrix B. Higher = higher frequency content.
+    """
+
+    def __init__(
+        self,
+        in_dim: int = 1,
+        out_dim: int = 1,
+        hidden_dims: List[int] | None = None,
+        activation: str = "tanh",
+        n_frequencies: int = 16,
+        sigma: float = 1.0,
+    ):
+        super().__init__()
+        hidden_dims = hidden_dims or [32, 32, 32]
+
+        # Fixed random frequency matrix (not trainable)
+        B = torch.randn(n_frequencies, in_dim) * sigma
+        self.register_buffer("B", B)
+
+        # MLP takes 2*n_frequencies input (sin + cos)
+        self.mlp = MLP(2 * n_frequencies, out_dim, hidden_dims, activation)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Fourier features: [sin(2π·B·x), cos(2π·B·x)]
+        proj = 2.0 * torch.pi * x @ self.B.T  # (batch, n_freq)
+        features = torch.cat([torch.sin(proj), torch.cos(proj)], dim=-1)
+        return self.mlp(features)
