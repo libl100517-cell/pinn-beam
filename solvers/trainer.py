@@ -152,6 +152,21 @@ class Trainer:
 
             # Logging
             self.logger.log_loss(loss.item(), components)
+            # Learning rate
+            self.logger.lr_history.append(self.optimizer.param_groups[0]["lr"])
+            # Effective weights (manual × warmup × adaptive)
+            eff_w = {}
+            for name in raw_losses:
+                w_manual = self.model.loss_fn.weights.get(name, 1.0)
+                w_adapt = adaptive_w.get(name, 1.0) if adaptive_w else 1.0
+                eff_w[name] = w_manual * w_adapt
+            # Add equil_M if separate
+            if "equil_M" not in eff_w and "equil_M" in components:
+                eff_w["equil_M"] = self.model.loss_fn.weights.get("equil_M", 1.0)
+            for name, val in eff_w.items():
+                if name not in self.logger.effective_weight_history:
+                    self.logger.effective_weight_history[name] = []
+                self.logger.effective_weight_history[name].append(val)
             if (self.use_ntk or self.use_gradnorm) and self._ntk_weights:
                 self.logger.log_ntk_weights(self._ntk_weights)
             if self.model.inverse_registry is not None:

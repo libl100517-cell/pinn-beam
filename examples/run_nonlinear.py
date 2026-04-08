@@ -368,8 +368,17 @@ def main():
     ax.set_xlabel("strain (‰)"); ax.set_ylabel("stress (MPa)")
     ax.set_title(f"Steel σ-ε (fy={steel.fy:.0f})"); ax.grid(True, alpha=0.3)
 
-    # (3,3) blank
-    axes[3, 3].axis("off")
+    # (3,3) Learning rate + effective weights
+    ax = axes[3, 3]
+    ax2 = ax.twinx()
+    ax.plot(logger.lr_history, "k-", lw=1, label="lr")
+    ax.set_xlabel("Epoch"); ax.set_ylabel("Learning rate")
+    ax.set_title("LR & weights")
+    # Plot effective weights on secondary axis
+    for name, hist in logger.effective_weight_history.items():
+        ax2.semilogy(hist, lw=0.7, alpha=0.7, label=name)
+    ax2.set_ylabel("Effective weight")
+    ax2.legend(fontsize=5, ncol=2, loc="center right")
 
     fig.suptitle(f"Nonlinear SS Beam: L={L}mm, q={q}N/mm, fc={cfg.fc}MPa, fy={cfg.fy}MPa",
                  fontsize=12)
