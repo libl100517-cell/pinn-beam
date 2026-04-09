@@ -195,6 +195,7 @@ def main():
     print(f"\n  Training {cfg.n_epochs} epochs ...")
     loss_history, lr_history, compat_history = [], [], []
     comp_history = {}  # per-component history (summed across spans)
+    weight_history = {}  # effective weight history
     best_loss, best_state = float("inf"), {}
 
     for epoch in range(1, cfg.n_epochs + 1):
@@ -247,6 +248,18 @@ def main():
         loss_history.append(total_loss.item())
         lr_history.append(optimizer.param_groups[0]["lr"])
         compat_history.append(compat_loss.item())
+
+        # Track effective weights (manual × warmup)
+        eff_w = {}
+        for k, v in span_w.items():
+            ramp = warmup_ramp if k in ("equil_N", "N_sec_bc") else 1.0
+            eff_w[k] = v * ramp
+        eff_w["M_end_bc"] = w_Mbc * warmup_ramp
+        eff_w["compat"] = w_compat * warmup_ramp
+        for k, v in eff_w.items():
+            if k not in weight_history:
+                weight_history[k] = []
+            weight_history[k].append(v)
         for k, v in epoch_comps.items():
             if k not in comp_history:
                 comp_history[k] = []
@@ -369,7 +382,14 @@ def main():
     ax.semilogy(comp_history.get("compat_θ", [1]), lw=1, label="compat_θ")
     ax.set_title("Compat losses"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
 
-    ax = axes[3,2]; ax.plot(lr_history, "k-", lw=1); ax.set_title("Learning rate"); ax.grid(True, alpha=0.3)
+    ax = axes[3,2]
+    ax2 = ax.twinx()
+    ax.plot(lr_history, "k-", lw=1, label="lr")
+    ax.set_ylabel("Learning rate"); ax.set_title("LR & weights")
+    for name, hist in weight_history.items():
+        ax2.semilogy(hist, lw=0.7, alpha=0.7, label=name)
+    ax2.set_ylabel("Effective weight")
+    ax2.legend(fontsize=4, ncol=2, loc="center right")
 
     ax = axes[3,3]
     ax.bar(["NRMSE_w", "NRMSE_M"], [nrmse_w, nrmse_M])
