@@ -129,7 +129,7 @@ def main():
     xi_cols = [uniform_collocation(cfg.n_collocation, device=device) for _ in range(n_spans)]
     xi_bcs = [boundary_points(device=device) for _ in range(n_spans)]
     q_bar = scales.to_nondim_q(q)
-    w_compat = 1e5
+    w_compat = 1e4
     w_Mbc = cfg.loss_weights.get("M_net_bc", 100.0)
 
     optimizer = torch.optim.Adam(all_params, lr=cfg.learning_rate)
@@ -207,7 +207,8 @@ def main():
         total_loss = total_loss + M_end_loss
         epoch_comps["M_end_bc"] = M_end_loss.item()
 
-        # Compatibility
+        # Compatibility (warmup: ramp from 0 to w_compat over first half)
+        compat_ramp = min(epoch / (cfg.n_epochs // 2), 1.0)
         compat_M_loss = torch.tensor(0.0, device=device)
         compat_theta_loss = torch.tensor(0.0, device=device)
         for j in range(n_spans - 1):
@@ -219,7 +220,7 @@ def main():
             dwR = _grad(fR["w_bar"], bR)
             compat_theta_loss = compat_theta_loss + (dwL[1:2] - dwR[0:1])**2
         compat_loss = compat_M_loss.sum() + compat_theta_loss.sum()
-        total_loss = total_loss + w_compat * compat_loss
+        total_loss = total_loss + w_compat * compat_ramp * compat_loss
         epoch_comps["compat_M"] = compat_M_loss.item()
         epoch_comps["compat_θ"] = compat_theta_loss.item()
 
