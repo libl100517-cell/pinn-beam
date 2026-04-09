@@ -184,33 +184,44 @@ def main():
     # Training
     print(f"\n  Training {cfg.n_epochs} epochs ...")
     loss_history, lr_history, compat_history = [], [], []
+    comp_history = {}  # per-component history (summed across spans)
     best_loss, best_state = float("inf"), {}
 
     for epoch in range(1, cfg.n_epochs + 1):
         optimizer.zero_grad()
         total_loss = torch.tensor(0.0, device=device)
 
+        # Accumulate loss components across spans
+        epoch_comps = {}
         for i in range(n_spans):
-            loss_i, _, _, _ = span_pinns[i].forward(xi_cols[i], xi_bcs[i], q_bar)
+            loss_i, comps_i, _, _ = span_pinns[i].forward(xi_cols[i], xi_bcs[i], q_bar)
             total_loss = total_loss + loss_i
+            for k, v in comps_i.items():
+                if k != "total":
+                    epoch_comps[k] = epoch_comps.get(k, 0) + v
 
         # M=0 at beam ends only
         bc_A = span_nets[0](xi_bcs[0])
         bc_D = span_nets[-1](xi_bcs[-1])
-        total_loss = total_loss + w_Mbc * (bc_A["M_bar"][0:1]**2).mean()
-        total_loss = total_loss + w_Mbc * (bc_D["M_bar"][1:2]**2).mean()
+        M_end_loss = w_Mbc * ((bc_A["M_bar"][0:1]**2).mean() + (bc_D["M_bar"][1:2]**2).mean())
+        total_loss = total_loss + M_end_loss
+        epoch_comps["M_end_bc"] = M_end_loss.item()
 
         # Compatibility
-        compat_loss = torch.tensor(0.0, device=device)
+        compat_M_loss = torch.tensor(0.0, device=device)
+        compat_theta_loss = torch.tensor(0.0, device=device)
         for j in range(n_spans - 1):
             bL = xi_bcs[j].detach().requires_grad_(True)
             bR = xi_bcs[j+1].detach().requires_grad_(True)
             fL, fR = span_nets[j](bL), span_nets[j+1](bR)
-            compat_loss = compat_loss + (fL["M_bar"][1:2] - fR["M_bar"][0:1])**2
+            compat_M_loss = compat_M_loss + (fL["M_bar"][1:2] - fR["M_bar"][0:1])**2
             dwL = _grad(fL["w_bar"], bL)
             dwR = _grad(fR["w_bar"], bR)
-            compat_loss = compat_loss + (dwL[1:2] - dwR[0:1])**2
-        total_loss = total_loss + w_compat * compat_loss.sum()
+            compat_theta_loss = compat_theta_loss + (dwL[1:2] - dwR[0:1])**2
+        compat_loss = compat_M_loss.sum() + compat_theta_loss.sum()
+        total_loss = total_loss + w_compat * compat_loss
+        epoch_comps["compat_M"] = compat_M_loss.item()
+        epoch_comps["compat_θ"] = compat_theta_loss.item()
 
         total_loss.backward()
         optimizer.step()
@@ -218,6 +229,10 @@ def main():
         loss_history.append(total_loss.item())
         lr_history.append(optimizer.param_groups[0]["lr"])
         compat_history.append(compat_loss.item())
+        for k, v in epoch_comps.items():
+            if k not in comp_history:
+                comp_history[k] = []
+            comp_history[k].append(v)
 
         if total_loss.item() < best_loss:
             best_loss = total_loss.item()
@@ -326,13 +341,15 @@ def main():
     ax = axes[2,3]; ax.plot(kappa_all, eps_bot_p*1e3, "b.", ms=2, label="PINN"); ax.plot(kappa_ri, eps_bot_r*1e3, "r+", ms=3, label="Ref")
     ax.set_xlabel("κ"); ax.set_ylabel("ε_bot (‰)"); ax.set_title(f"ε_bot-κ (y={y_bot:.0f})"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
 
-    # Row 3: loss components, compat, lr+weights, error
-    ax = axes[3,0]; ax.semilogy(loss_history, "k-", lw=0.5, label="Total")
-    ax.semilogy(compat_history, "b-", lw=0.5, alpha=0.7, label="Compat")
-    ax.set_title("Loss history"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+    # Row 3: all loss components, lr, error
+    ax = axes[3,0]; ax.semilogy(loss_history, "k-", lw=1, label="Total")
+    for name, hist in comp_history.items():
+        ax.semilogy(hist, lw=0.7, alpha=0.7, label=name)
+    ax.set_title("All losses"); ax.legend(fontsize=5, ncol=2); ax.grid(True, alpha=0.3)
 
-    ax = axes[3,1]; ax.semilogy(compat_history, "b-", lw=0.5)
-    ax.set_title("Compat loss"); ax.grid(True, alpha=0.3)
+    ax = axes[3,1]; ax.semilogy(comp_history.get("compat_M", [1]), lw=1, label="compat_M")
+    ax.semilogy(comp_history.get("compat_θ", [1]), lw=1, label="compat_θ")
+    ax.set_title("Compat losses"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
 
     ax = axes[3,2]; ax.plot(lr_history, "k-", lw=1); ax.set_title("Learning rate"); ax.grid(True, alpha=0.3)
 
