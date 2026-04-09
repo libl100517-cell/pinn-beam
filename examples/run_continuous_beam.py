@@ -150,8 +150,10 @@ def main():
     V_ref = np.gradient(M_ref, x_ref)
     from scipy.integrate import cumulative_trapezoid
     from scipy.interpolate import interp1d
-    theta_r = cumulative_trapezoid(kappa_ref, x_ref, initial=0)
-    w_raw = cumulative_trapezoid(theta_r, x_ref, initial=0)
+    # w'' = -kappa → integrate -kappa twice for w
+    theta_raw = cumulative_trapezoid(-kappa_ref, x_ref, initial=0)
+    w_raw = cumulative_trapezoid(theta_raw, x_ref, initial=0)
+    # Enforce w=0 at all supports
     sw = [np.interp(sx, x_ref, w_raw) for sx in sup_x]
     w_ref = w_raw - interp1d(sup_x, sw, kind="linear")(x_ref)
     theta_ref = np.gradient(w_ref, x_ref)
@@ -269,8 +271,18 @@ def main():
     print(f"  NRMSE_M = {nrmse_M:.2f}%")
     print(f"  max|N| = {np.max(np.abs(N_all)):.0f} N")
 
-    # ── Plot 4x4 ──
-    fig, axes = plt.subplots(4, 4, figsize=(24, 20))
+    # ── Compute top/bottom strains ──
+    h = cfg.section_height
+    y_top, y_bot = h/2, -h/2
+    eps_top_p = eps0_all - kappa_all * y_top
+    eps_bot_p = eps0_all - kappa_all * y_bot
+    kappa_ri = np.interp(x_all, x_ref, kappa_ref)
+    eps0_ri = np.interp(x_all, x_ref, eps0_ref)
+    eps_top_r = eps0_ri - kappa_ri * y_top
+    eps_bot_r = eps0_ri - kappa_ri * y_bot
+
+    # ── Plot 5x4 ──
+    fig, axes = plt.subplots(5, 4, figsize=(24, 26))
     def add_sup(ax):
         for sx in sup_x: ax.axvline(sx, color="gray", ls=":", lw=0.5)
 
@@ -301,39 +313,56 @@ def main():
     ax = axes[1,3]; ax.plot(x_all, N_all/1e3, "b-", lw=2, label="N_sec"); ax.axhline(0, color="r", ls="--", lw=1)
     add_sup(ax); ax.set_title("Axial force N"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
 
-    # Row 2: loss, compat, lr+weights, error bar
-    ax = axes[2,0]; ax.semilogy(loss_history, "k-", lw=0.5); ax.set_title("Total loss"); ax.grid(True, alpha=0.3)
-    ax = axes[2,1]; ax.semilogy(compat_history, "b-", lw=0.5); ax.set_title("Compat loss"); ax.grid(True, alpha=0.3)
+    # Row 2: M-κ, ε₀-κ, ε_top-κ, ε_bot-κ
+    ax = axes[2,0]; ax.plot(kappa_all, M_all/1e6, "b.", ms=2, label="PINN"); ax.plot(kappa_ri, M_ri/1e6, "r+", ms=3, label="Ref")
+    ax.set_xlabel("κ"); ax.set_ylabel("M (kN·m)"); ax.set_title("M-κ"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
 
-    ax = axes[2,2]; ax.plot(lr_history, "k-", lw=1); ax.set_title("Learning rate"); ax.grid(True, alpha=0.3)
+    ax = axes[2,1]; ax.plot(kappa_all, eps0_all*1e3, "b.", ms=2, label="PINN"); ax.plot(kappa_ri, eps0_ri*1e3, "r+", ms=3, label="Ref")
+    ax.set_xlabel("κ"); ax.set_ylabel("ε₀ (‰)"); ax.set_title("ε₀-κ"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
 
-    ax = axes[2,3]
+    ax = axes[2,2]; ax.plot(kappa_all, eps_top_p*1e3, "b.", ms=2, label="PINN"); ax.plot(kappa_ri, eps_top_r*1e3, "r+", ms=3, label="Ref")
+    ax.set_xlabel("κ"); ax.set_ylabel("ε_top (‰)"); ax.set_title(f"ε_top-κ (y={y_top:.0f})"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+    ax = axes[2,3]; ax.plot(kappa_all, eps_bot_p*1e3, "b.", ms=2, label="PINN"); ax.plot(kappa_ri, eps_bot_r*1e3, "r+", ms=3, label="Ref")
+    ax.set_xlabel("κ"); ax.set_ylabel("ε_bot (‰)"); ax.set_title(f"ε_bot-κ (y={y_bot:.0f})"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+    # Row 3: loss components, compat, lr+weights, error
+    ax = axes[3,0]; ax.semilogy(loss_history, "k-", lw=0.5, label="Total")
+    ax.semilogy(compat_history, "b-", lw=0.5, alpha=0.7, label="Compat")
+    ax.set_title("Loss history"); ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+    ax = axes[3,1]; ax.semilogy(compat_history, "b-", lw=0.5)
+    ax.set_title("Compat loss"); ax.grid(True, alpha=0.3)
+
+    ax = axes[3,2]; ax.plot(lr_history, "k-", lw=1); ax.set_title("Learning rate"); ax.grid(True, alpha=0.3)
+
+    ax = axes[3,3]
     ax.bar(["NRMSE_w", "NRMSE_M"], [nrmse_w, nrmse_M])
     for j, v in enumerate([nrmse_w, nrmse_M]): ax.text(j, v+0.5, f"{v:.1f}%", ha="center", fontsize=9)
     ax.set_title("Error"); ax.grid(True, alpha=0.3, axis="y")
 
-    # Row 3: stress contour
-    h = cfg.section_height
+    # Row 4: stress contour
     n_y = 50; y_arr = np.linspace(-h/2, h/2, n_y)
     X_grid, Y_grid = np.meshgrid(x_all, y_arr)
     stress_pinn = np.zeros_like(X_grid)
     stress_ref_grid = np.zeros_like(X_grid)
     for j, yj in enumerate(y_arr):
         strain_p = eps0_all - kappa_all * yj
-        strain_r = np.interp(x_all, x_ref, eps0_ref) - np.interp(x_all, x_ref, kappa_ref) * yj
+        strain_r = eps0_ri - kappa_ri * yj
         with torch.no_grad():
             stress_pinn[j] = concrete.stress(torch.tensor(strain_p, dtype=torch.float32)).numpy()
             stress_ref_grid[j] = concrete.stress(torch.tensor(strain_r, dtype=torch.float32)).numpy()
 
-    for ax_s, sgrid, title in [(axes[3,0], stress_pinn, "PINN σ"), (axes[3,1], stress_ref_grid, "Ref σ")]:
-        vmin = min(sgrid.min(), -30); vmax = max(sgrid.max(), 5)
-        ax_s.pcolormesh(X_grid, Y_grid, sgrid, cmap="RdBu_r", vmin=vmin, vmax=vmax, shading="auto")
+    vmin = min(stress_pinn.min(), stress_ref_grid.min(), -30)
+    vmax = max(stress_pinn.max(), stress_ref_grid.max(), 5)
+    for ax_s, sgrid, title in [(axes[4,0], stress_pinn, "PINN σ"), (axes[4,1], stress_ref_grid, "Ref σ")]:
+        im = ax_s.pcolormesh(X_grid, Y_grid, sgrid, cmap="RdBu_r", vmin=vmin, vmax=vmax, shading="auto")
         ax_s.contour(X_grid, Y_grid, sgrid, levels=[0], colors="k", linewidths=1.5)
         for sx in sup_x: ax_s.axvline(sx, color="gray", ls=":", lw=0.5)
         ax_s.set_title(title); ax_s.set_ylabel("y (mm)")
-    axes[3,1].set_xlabel("x (mm)")
-
-    axes[3,2].axis("off"); axes[3,3].axis("off")
+        fig.colorbar(im, ax=ax_s, shrink=0.7)
+    axes[4,1].set_xlabel("x (mm)")
+    axes[4,2].axis("off"); axes[4,3].axis("off")
 
     fig.suptitle(f"3-span: L={L_span}×{n_spans}, q={q} | NRMSE_w={nrmse_w:.1f}%, M={nrmse_M:.1f}%", fontsize=13)
     fig.tight_layout()
