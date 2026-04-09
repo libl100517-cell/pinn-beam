@@ -200,15 +200,18 @@ def main():
                 if k != "total":
                     epoch_comps[k] = epoch_comps.get(k, 0) + v
 
-        # M=0 at beam ends only
+        # Warmup ramp: 0→1 over first half
+        warmup_ramp = min(epoch / (cfg.n_epochs // 2), 1.0)
+
+        # M=0 at beam ends only (warmup)
         bc_A = span_nets[0](xi_bcs[0])
         bc_D = span_nets[-1](xi_bcs[-1])
-        M_end_loss = w_Mbc * ((bc_A["M_bar"][0:1]**2).mean() + (bc_D["M_bar"][1:2]**2).mean())
+        M_end_loss = w_Mbc * warmup_ramp * (
+            (bc_A["M_bar"][0:1]**2).mean() + (bc_D["M_bar"][1:2]**2).mean())
         total_loss = total_loss + M_end_loss
         epoch_comps["M_end_bc"] = M_end_loss.item()
 
-        # Compatibility (warmup: ramp from 0 to w_compat over first half)
-        compat_ramp = min(epoch / (cfg.n_epochs // 2), 1.0)
+        # Compatibility (warmup)
         compat_M_loss = torch.tensor(0.0, device=device)
         compat_theta_loss = torch.tensor(0.0, device=device)
         for j in range(n_spans - 1):
@@ -220,7 +223,7 @@ def main():
             dwR = _grad(fR["w_bar"], bR)
             compat_theta_loss = compat_theta_loss + (dwL[1:2] - dwR[0:1])**2
         compat_loss = compat_M_loss.sum() + compat_theta_loss.sum()
-        total_loss = total_loss + w_compat * compat_ramp * compat_loss
+        total_loss = total_loss + w_compat * warmup_ramp * compat_loss
         epoch_comps["compat_M"] = compat_M_loss.item()
         epoch_comps["compat_θ"] = compat_theta_loss.item()
 
@@ -386,6 +389,51 @@ def main():
     fig.tight_layout()
     fig.savefig(os.path.join(RUN_DIR, "continuous_beam.png"), dpi=150)
     plt.close(fig)
+    # ── Save run summary ──
+    sup_moments = []
+    for j in range(n_spans - 1):
+        with torch.no_grad():
+            Mr = span_nets[j](xi_bcs[j])["M_bar"][1].item() * scales.M_ref
+            Ml = span_nets[j+1](xi_bcs[j+1])["M_bar"][0].item() * scales.M_ref
+        sup_moments.append((Mr, Ml))
+
+    summary = f"""Run: {os.path.basename(RUN_DIR)}
+Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+=== Configuration ===
+Type: {n_spans}-span continuous beam
+Span length: {L_span}mm, Total: {L_total}mm
+Load: q={q}N/mm, N_applied={cfg.N_applied}N
+Section: {cfg.section_width}x{cfg.section_height}mm
+Material: elastic (Ec={cfg.Ec}, Es=200000)
+Rebar: {cfg.rebar_layout}
+
+=== PINN Architecture ===
+Networks: {n_spans} × 3-MLP (w, eps0, M), N from fiber section
+Hidden: {cfg.hidden_dims}, activation={cfg.activation}
+Norm coeffs: w={nc['w']:.3e}, M={nc['M']:.3e}, eps0={nc['eps0']:.3e}
+
+=== Training ===
+Epochs: {cfg.n_epochs}, lr={cfg.learning_rate}, scheduler=None (constant)
+Collocation: {cfg.n_collocation} per span
+Loss weights: {dict(cfg.loss_weights)}
+M_net_bc: disabled (M=0 only at beam ends, w_Mbc={w_Mbc})
+Compat weight: {w_compat} (M + θ continuity)
+Warmup: M_end_bc + compat ramp over first {cfg.n_epochs//2} epochs
+
+=== Results ===
+NRMSE_w = {nrmse_w:.2f}%
+NRMSE_M = {nrmse_M:.2f}%
+max|N| = {np.max(np.abs(N_all)):.0f} N
+
+Support moments (analytical: {M_sup/1e6:.2f} kN·m):
+"""
+    for j, (Mr, Ml) in enumerate(sup_moments):
+        summary += f"  Support {j+1}: left={Mr/1e6:.2f}, right={Ml/1e6:.2f} kN·m\n"
+
+    with open(os.path.join(RUN_DIR, "run_summary.txt"), "w") as f:
+        f.write(summary)
+
     print(f"\n  Saved to {os.path.abspath(RUN_DIR)}")
 
 
