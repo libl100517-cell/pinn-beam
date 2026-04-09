@@ -229,18 +229,24 @@ def main():
         # Compatibility (warmup)
         compat_M_loss = torch.tensor(0.0, device=device)
         compat_theta_loss = torch.tensor(0.0, device=device)
+        compat_eps0_loss = torch.tensor(0.0, device=device)
         for j in range(n_spans - 1):
             bL = xi_bcs[j].detach().requires_grad_(True)
             bR = xi_bcs[j+1].detach().requires_grad_(True)
             fL, fR = span_nets[j](bL), span_nets[j+1](bR)
+            # M continuity
             compat_M_loss = compat_M_loss + (fL["M_bar"][1:2] - fR["M_bar"][0:1])**2
+            # θ continuity
             dwL = _grad(fL["w_bar"], bL)
             dwR = _grad(fR["w_bar"], bR)
             compat_theta_loss = compat_theta_loss + (dwL[1:2] - dwR[0:1])**2
-        compat_loss = compat_M_loss.sum() + compat_theta_loss.sum()
+            # eps0 continuity (→ N continuity via section response)
+            compat_eps0_loss = compat_eps0_loss + (fL["eps0_bar"][1:2] - fR["eps0_bar"][0:1])**2
+        compat_loss = compat_M_loss.sum() + compat_theta_loss.sum() + compat_eps0_loss.sum()
         total_loss = total_loss + w_compat * warmup_ramp * compat_loss
         epoch_comps["compat_M"] = compat_M_loss.item()
         epoch_comps["compat_θ"] = compat_theta_loss.item()
+        epoch_comps["compat_ε₀"] = compat_eps0_loss.item()
 
         total_loss.backward()
         optimizer.step()
