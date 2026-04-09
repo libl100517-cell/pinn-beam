@@ -191,17 +191,21 @@ def main():
         optimizer.zero_grad()
         total_loss = torch.tensor(0.0, device=device)
 
+        # Warmup ramp: 0→1 over first half
+        warmup_ramp = min(epoch / (cfg.n_epochs // 2), 1.0)
+
+        # N weights warmup (same as single span)
+        n_warmup = {"equil_N": warmup_ramp, "N_sec_bc": warmup_ramp}
+
         # Accumulate loss components across spans
         epoch_comps = {}
         for i in range(n_spans):
-            loss_i, comps_i, _, _ = span_pinns[i].forward(xi_cols[i], xi_bcs[i], q_bar)
+            loss_i, comps_i, _, _ = span_pinns[i].forward(
+                xi_cols[i], xi_bcs[i], q_bar, adaptive_weights=n_warmup)
             total_loss = total_loss + loss_i
             for k, v in comps_i.items():
                 if k != "total":
                     epoch_comps[k] = epoch_comps.get(k, 0) + v
-
-        # Warmup ramp: 0→1 over first half
-        warmup_ramp = min(epoch / (cfg.n_epochs // 2), 1.0)
 
         # M=0 at beam ends only (warmup)
         bc_A = span_nets[0](xi_bcs[0])
