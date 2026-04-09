@@ -81,6 +81,16 @@ def main():
         n_collocation=100, activation="tanh",
         q=20.0, N_applied=0.0, elastic=True,
         hidden_dims=[32, 32, 32, 32, 32],
+        loss_weights={
+            "equil_M": 100.0,
+            "equil_N": 1e4,
+            "const_M": 10.0,
+            "bc": 1000.0,        # stronger w=0 at supports
+            "M_net_bc": 100.0,
+            "M_sec_bc": 1000.0,  # stronger M_sec=0 at boundaries
+            "N_sec_bc": 1e5,
+            "data_disp": 1.0,
+        },
     )
     device = get_device()
     set_seed(cfg.seed)
