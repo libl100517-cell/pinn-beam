@@ -88,7 +88,7 @@ def main():
             "bc": 1000.0,        # stronger w=0 at supports
             "M_net_bc": 100.0,
             "M_sec_bc": 1000.0,  # stronger M_sec=0 at boundaries
-            "N_sec_bc": 1e5,
+            "N_sec_bc": 1e6,
             "data_disp": 1.0,
         },
     )
